@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import time
@@ -9,7 +10,14 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
 from app.comparison import verify_label
-from app.models import ApplicationData, VerificationResult
+from app.models import (
+    ApplicationData,
+    BatchError,
+    BatchItemResult,
+    BatchSummary,
+    BatchVerificationResult,
+    VerificationResult,
+)
 from app.vision import (
     OpenAIVisionService,
     VisionConfigurationError,
@@ -23,6 +31,8 @@ from app.vision import (
 
 SERVICE_NAME = "ttb-label-verification"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+MAX_BATCH_IMAGES = 10
+BATCH_CONCURRENCY_DEFAULT = 3
 UPLOAD_CHUNK_BYTES = 64 * 1024
 LATENCY_BUDGET_MS = 5000
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -173,6 +183,78 @@ async def verify(
         )
 
 
+@app.post("/verify/batch", response_model=BatchVerificationResult)
+async def verify_batch(
+    images: list[UploadFile] | None = File(default=None),
+    brand_name: str | None = Form(default=None),
+    product_class: str | None = Form(default=None),
+    producer_name: str | None = Form(default=None),
+    country_of_origin: str | None = Form(default=None),
+    alcohol_by_volume: str | None = Form(default=None),
+    net_contents: str | None = Form(default=None),
+    government_warning: str | None = Form(default=None),
+    vision_service: VisionService = Depends(get_vision_service),
+) -> BatchVerificationResult | JSONResponse:
+    start_time = time.perf_counter()
+
+    try:
+        form_values = _validate_application_fields(
+            {
+                "brand_name": brand_name,
+                "product_class": product_class,
+                "producer_name": producer_name,
+                "country_of_origin": country_of_origin,
+                "alcohol_by_volume": alcohol_by_volume,
+                "net_contents": net_contents,
+                "government_warning": government_warning,
+            },
+            start_time,
+        )
+        upload_items = await _validate_and_read_batch_images(images, start_time)
+        application = ApplicationData(**form_values)
+        concurrency = _batch_concurrency()
+        semaphore = asyncio.Semaphore(concurrency)
+
+        items = await asyncio.gather(
+            *(
+                _verify_batch_item(
+                    item["index"],
+                    item["filename"],
+                    item["content"],
+                    item["content_type"],
+                    application,
+                    vision_service,
+                    semaphore,
+                )
+                for item in upload_items
+            )
+        )
+        summary = _batch_summary(items)
+        latency_ms = _elapsed_ms(start_time)
+        _log_batch_completion(summary, latency_ms, concurrency)
+
+        return BatchVerificationResult(
+            summary=summary,
+            items=items,
+            latency_ms=latency_ms,
+        )
+    except HTTPException as exc:
+        return _error_response(
+            exc.status_code,
+            str(exc.detail["code"]),
+            str(exc.detail["message"]),
+            start_time,
+        )
+    except Exception:
+        logger.exception("Unexpected batch verification failure")
+        return _error_response(
+            500,
+            "batch_verification_failed",
+            "Batch verification failed unexpectedly. Please try again.",
+            start_time,
+        )
+
+
 def _validate_application_fields(
     values: dict[str, str | None],
     start_time: float,
@@ -203,6 +285,42 @@ def _validate_application_fields(
         cleaned[field] = cleaned_value
 
     return cleaned
+
+
+async def _validate_and_read_batch_images(
+    images: list[UploadFile] | None,
+    start_time: float,
+) -> list[dict[str, Any]]:
+    if not images:
+        raise _http_error(
+            422,
+            "missing_required_field",
+            "Please upload at least one label image.",
+            start_time,
+        )
+
+    if len(images) > MAX_BATCH_IMAGES:
+        raise _http_error(
+            422,
+            "too_many_images",
+            "Please upload 10 or fewer label images.",
+            start_time,
+        )
+
+    upload_items: list[dict[str, Any]] = []
+
+    for index, image in enumerate(images):
+        image_bytes = await _validate_and_read_image(image, start_time)
+        upload_items.append(
+            {
+                "index": index,
+                "filename": image.filename or f"Label {index + 1}",
+                "content_type": image.content_type,
+                "content": image_bytes,
+            }
+        )
+
+    return upload_items
 
 
 async def _validate_and_read_image(
@@ -291,6 +409,118 @@ def _error_response(
     )
 
 
+async def _verify_batch_item(
+    index: int,
+    filename: str,
+    image_bytes: bytes,
+    content_type: str | None,
+    application: ApplicationData,
+    vision_service: VisionService,
+    semaphore: asyncio.Semaphore,
+) -> BatchItemResult:
+    item_start = time.perf_counter()
+
+    async with semaphore:
+        try:
+            extracted = await asyncio.to_thread(
+                vision_service.extract,
+                image_bytes,
+                content_type,
+            )
+            result = verify_label(application, extracted)
+            item_latency_ms = _elapsed_ms(item_start)
+            result.latency_ms = item_latency_ms
+
+            return BatchItemResult(
+                index=index,
+                filename=filename,
+                status=result.verdict,
+                result=result,
+                latency_ms=item_latency_ms,
+            )
+        except VisionInputError:
+            return _batch_item_error(
+                index,
+                filename,
+                "invalid_image",
+                "We could not read this image. Please use a clear JPEG, PNG, or WebP label photo.",
+                item_start,
+            )
+        except VisionConfigurationError:
+            return _batch_item_error(
+                index,
+                filename,
+                "vision_not_configured",
+                "Label extraction is not configured right now. Please try again later.",
+                item_start,
+            )
+        except VisionTimeoutError:
+            return _batch_item_error(
+                index,
+                filename,
+                "vision_timeout",
+                "Label extraction took too long for this image.",
+                item_start,
+            )
+        except (VisionParseError, VisionProviderError):
+            return _batch_item_error(
+                index,
+                filename,
+                "extraction_unavailable",
+                "Label extraction failed for this image. Please try again.",
+                item_start,
+            )
+        except Exception:
+            logger.exception("Unexpected batch item failure")
+            return _batch_item_error(
+                index,
+                filename,
+                "verification_failed",
+                "Verification failed for this image. Please try again.",
+                item_start,
+            )
+
+
+def _batch_item_error(
+    index: int,
+    filename: str,
+    code: str,
+    message: str,
+    start_time: float,
+) -> BatchItemResult:
+    return BatchItemResult(
+        index=index,
+        filename=filename,
+        status="ERROR",
+        error=BatchError(code=code, message=message),
+        latency_ms=_elapsed_ms(start_time),
+    )
+
+
+def _batch_summary(items: list[BatchItemResult]) -> BatchSummary:
+    passed = sum(item.status == "PASS" for item in items)
+    needs_review = sum(item.status == "NEEDS_REVIEW" for item in items)
+    errors = sum(item.status == "ERROR" for item in items)
+
+    return BatchSummary(
+        total=len(items),
+        passed=passed,
+        needs_review=needs_review,
+        errors=errors,
+    )
+
+
+def _batch_concurrency() -> int:
+    raw_value = os.getenv("BATCH_CONCURRENCY", str(BATCH_CONCURRENCY_DEFAULT))
+
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return BATCH_CONCURRENCY_DEFAULT
+
+    return max(1, min(value, MAX_BATCH_IMAGES))
+
+
 def _elapsed_ms(start_time: float) -> int:
     return max(0, round((time.perf_counter() - start_time) * 1000))
 
@@ -321,5 +551,29 @@ def _log_error(status_code: int, code: str, latency_ms: int) -> None:
         logger.warning(log_message, *log_args)
     elif status_code >= 500:
         logger.error(log_message, *log_args)
+    else:
+        logger.info(log_message, *log_args)
+
+
+def _log_batch_completion(
+    summary: BatchSummary,
+    latency_ms: int,
+    concurrency: int,
+) -> None:
+    log_message = (
+        "verify batch completed total=%s passed=%s needs_review=%s errors=%s "
+        "latency_ms=%s concurrency=%s"
+    )
+    log_args = (
+        summary.total,
+        summary.passed,
+        summary.needs_review,
+        summary.errors,
+        latency_ms,
+        concurrency,
+    )
+
+    if latency_ms > LATENCY_BUDGET_MS:
+        logger.warning(log_message, *log_args)
     else:
         logger.info(log_message, *log_args)
