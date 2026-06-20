@@ -12,6 +12,7 @@ from app.vision import (
     VisionInputError,
     VisionParseError,
     VisionProviderError,
+    VisionTimeoutError,
     preprocess_label_image,
 )
 
@@ -120,6 +121,15 @@ def test_openai_service_wraps_timeout_as_provider_error():
     service = OpenAIVisionService(client=fake_client)
 
     with pytest.raises(VisionProviderError, match="timed out"):
+        service.extract(image_bytes())
+
+
+def test_openai_service_wraps_sdk_timeout_as_timeout_error():
+    api_timeout_error = type("APITimeoutError", (Exception,), {})
+    fake_client = FakeOpenAIClient(error=api_timeout_error("timed out"))
+    service = OpenAIVisionService(client=fake_client)
+
+    with pytest.raises(VisionTimeoutError, match="timed out"):
         service.extract(image_bytes())
 
 

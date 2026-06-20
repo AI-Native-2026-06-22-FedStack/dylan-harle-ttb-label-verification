@@ -65,6 +65,10 @@ class VisionProviderError(VisionServiceError):
     """Raised when the provider request fails before a parseable response exists."""
 
 
+class VisionTimeoutError(VisionProviderError):
+    """Raised when the provider request times out."""
+
+
 class VisionParseError(VisionServiceError):
     """Raised when provider output does not match the extraction schema."""
 
@@ -240,8 +244,11 @@ class OpenAIVisionService:
                 "Vision model returned output that did not match the extraction schema."
             ) from exc
         except TimeoutError as exc:
-            raise VisionProviderError("Vision model request timed out.") from exc
+            raise VisionTimeoutError("Vision model request timed out.") from exc
         except Exception as exc:
+            if _is_timeout_error(exc):
+                raise VisionTimeoutError("Vision model request timed out.") from exc
+
             raise VisionProviderError("Vision model request failed.") from exc
 
         return _extract_parsed_label(response)
@@ -270,6 +277,16 @@ def _extract_parsed_label(response: object) -> ExtractedLabel:
 def _data_url(processed: ProcessedImage) -> str:
     encoded = base64.b64encode(processed.data).decode("ascii")
     return f"data:{processed.content_type};base64,{encoded}"
+
+
+def _is_timeout_error(exc: Exception) -> bool:
+    return exc.__class__.__name__ in {
+        "APITimeoutError",
+        "ConnectTimeout",
+        "PoolTimeout",
+        "ReadTimeout",
+        "TimeoutException",
+    }
 
 
 def _target_long_edges(image: Image.Image, max_long_edge: int) -> list[int]:
