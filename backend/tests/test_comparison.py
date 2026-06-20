@@ -124,6 +124,30 @@ def test_correct_all_caps_government_warning_passes():
     assert result.status == "PASS"
 
 
+def test_government_warning_line_breaks_pass():
+    wrapped_warning = (
+        "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL,\n"
+        "WOMEN SHOULD NOT DRINK ALCOHOLIC BEVERAGES DURING\n"
+        "PREGNANCY BECAUSE OF THE RISK OF BIRTH DEFECTS. (2)\n"
+        "CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR ABILITY TO\n"
+        "DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH\n"
+        "PROBLEMS."
+    )
+
+    result = compare_government_warning(WARNING, wrapped_warning)
+
+    assert result.status == "PASS"
+    assert result.extracted == wrapped_warning
+
+
+def test_government_warning_repeated_spaces_pass():
+    warning_with_extra_spaces = WARNING.replace("SURGEON GENERAL,", "SURGEON  GENERAL,")
+
+    result = compare_government_warning(WARNING, warning_with_extra_spaces)
+
+    assert result.status == "PASS"
+
+
 def test_misread_government_warning_returns_extracted_text():
     misread_warning = WARNING.replace("SURGEON", "SUREEON")
 
@@ -146,4 +170,3 @@ def test_any_failed_field_returns_needs_review():
 
     assert result.verdict == "NEEDS_REVIEW"
     assert any(field.status == "FAIL" for field in result.fields)
-

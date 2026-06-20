@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
 
 from app.comparison import verify_label
 from app.models import ApplicationData, VerificationResult
@@ -36,6 +37,7 @@ APPLICATION_FIELDS = (
 )
 
 logger = logging.getLogger(__name__)
+load_dotenv()
 
 
 def allowed_origins() -> list[str]:
@@ -66,8 +68,13 @@ def health() -> dict[str, Any]:
     }
 
 
+class EnvironmentVisionService:
+    def extract(self, image_bytes: bytes, content_type: str | None = None):
+        return OpenAIVisionService.from_env().extract(image_bytes, content_type)
+
+
 def get_vision_service() -> VisionService:
-    return OpenAIVisionService.from_env()
+    return EnvironmentVisionService()
 
 
 @app.post("/verify", response_model=VerificationResult)
