@@ -142,6 +142,7 @@ h3 {
   height: 1px;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
   white-space: nowrap;
 }
 
@@ -310,9 +311,12 @@ h3 {
 
 .form-field input:focus,
 .form-field textarea:focus,
+.mode-switch button:focus-visible,
 .file-button:focus-visible,
 .submit-button:focus-visible,
-.secondary-button:focus-visible {
+.secondary-button:focus-visible,
+.batch-result-button:focus-visible,
+.alert:focus {
   outline: 4px solid #f2b705;
   outline-offset: 2px;
 }
@@ -428,6 +432,7 @@ h3 {
 .batch-result-button {
   display: grid;
   gap: 6px;
+  min-height: 58px;
   border: 2px solid #cad6e4;
   border-left-width: 8px;
   border-radius: 8px;
@@ -649,6 +654,22 @@ h3 {
   .result-row-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .progress-track span {
+    left: 0;
+    width: 100%;
   }
 }
 

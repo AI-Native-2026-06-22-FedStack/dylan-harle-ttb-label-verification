@@ -1,4 +1,5 @@
 from io import BytesIO
+from types import ModuleType
 from types import SimpleNamespace
 
 import pytest
@@ -87,7 +88,7 @@ def test_openai_service_uses_structured_parse_and_maps_populated_label():
     call = fake_client.responses.calls[0]
     assert call["model"] == "test-vision-model"
     assert call["text_format"].__name__ == "VisionExtraction"
-    assert call["timeout"] == pytest.approx(4.0)
+    assert call["timeout"] == pytest.approx(3.8)
 
     user_content = call["input"][1]["content"]
     prompt = user_content[0]["text"]
@@ -177,3 +178,43 @@ def test_preprocess_does_not_upscale_small_image():
 def test_preprocess_rejects_invalid_image_bytes():
     with pytest.raises(VisionInputError, match="could not be decoded"):
         preprocess_label_image(b"not an image")
+
+
+def test_preprocess_rejects_images_above_pixel_cap():
+    with pytest.raises(VisionInputError, match="pixel cap"):
+        preprocess_label_image(
+            image_bytes(size=(101, 100)),
+            max_pixels=10_000,
+        )
+
+
+def test_openai_service_reads_tuning_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakeOpenAI:
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+
+    fake_openai_module = ModuleType("openai")
+    fake_openai_module.OpenAI = FakeOpenAI
+    monkeypatch.setitem(__import__("sys").modules, "openai", fake_openai_module)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_VISION_MODEL", "gpt-test-fast")
+    monkeypatch.setenv("OPENAI_IMAGE_DETAIL", "low")
+    monkeypatch.setenv("OPENAI_VISION_TIMEOUT_SECONDS", "2.5")
+    monkeypatch.setenv("OPENAI_MAX_IMAGE_LONG_EDGE", "1120")
+    monkeypatch.setenv("OPENAI_JPEG_QUALITY", "80")
+    monkeypatch.setenv("OPENAI_MIN_JPEG_QUALITY", "70")
+    monkeypatch.setenv("OPENAI_MAX_PROCESSED_BYTES", "1048576")
+    monkeypatch.setenv("OPENAI_MAX_IMAGE_PIXELS", "9000000")
+
+    service = OpenAIVisionService.from_env()
+
+    assert service.model == "gpt-test-fast"
+    assert service.image_detail == "low"
+    assert service.timeout_seconds == pytest.approx(2.5)
+    assert service.max_long_edge == 1120
+    assert service.jpeg_quality == 80
+    assert service.min_jpeg_quality == 70
+    assert service.max_processed_bytes == 1_048_576
+    assert service.max_image_pixels == 9_000_000

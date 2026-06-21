@@ -10,7 +10,7 @@ FUZZY_STRATEGY = "fuzzy_token_set_ratio"
 COUNTRY_STRATEGY = "country_synonym_exact"
 ABV_STRATEGY = "abv_numeric_tolerance"
 NET_CONTENTS_STRATEGY = "net_contents_ml_tolerance"
-WARNING_STRATEGY = "exact_case_sensitive_whitespace_normalized"
+WARNING_STRATEGY = "exact_case_sensitive_whitespace_folded"
 
 
 def _is_missing(value: str | None) -> bool:
@@ -84,6 +84,8 @@ def compare_producer_name(expected: str, extracted: str | None) -> FieldResult:
 
 
 COUNTRY_SYNONYMS = {
+    "theunitedstates": "united states",
+    "theunitedstatesofamerica": "united states",
     "us": "united states",
     "usa": "united states",
     "unitedstates": "united states",
@@ -94,14 +96,48 @@ COUNTRY_SYNONYMS = {
     "greatbritain": "united kingdom",
 }
 
+COUNTRY_PREFIX_TOKENS = (
+    ("country", "of", "origin"),
+    ("product", "of"),
+    ("produced", "in"),
+    ("made", "in"),
+    ("bottled", "in"),
+    ("imported", "from"),
+    ("origin",),
+)
+
 
 def _country_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.casefold())
 
 
+def _country_tokens(value: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", value.casefold())
+
+
+def _strip_country_prefix(tokens: list[str]) -> list[str]:
+    for prefix in COUNTRY_PREFIX_TOKENS:
+        prefix_length = len(prefix)
+
+        if len(tokens) > prefix_length and tuple(tokens[:prefix_length]) == prefix:
+            return tokens[prefix_length:]
+
+    return tokens
+
+
 def _canonical_country(value: str) -> str:
-    key = _country_key(value)
-    return COUNTRY_SYNONYMS.get(key, " ".join(re.findall(r"[a-z0-9]+", value.casefold())))
+    tokens = _country_tokens(value)
+
+    while True:
+        stripped_tokens = _strip_country_prefix(tokens)
+
+        if stripped_tokens == tokens:
+            break
+
+        tokens = stripped_tokens
+
+    key = _country_key(" ".join(tokens))
+    return COUNTRY_SYNONYMS.get(key, " ".join(tokens))
 
 
 def compare_country_of_origin(expected: str, extracted: str | None) -> FieldResult:
@@ -229,11 +265,7 @@ def compare_government_warning(expected: str, extracted: str | None) -> FieldRes
     if _is_missing(extracted):
         return _missing_result("government_warning", expected, extracted, WARNING_STRATEGY)
 
-    status = (
-        "PASS"
-        if _normalize_warning_whitespace(expected) == _normalize_warning_whitespace(extracted)
-        else "FAIL"
-    )
+    status = "PASS" if _normalize_warning_text(expected) == _normalize_warning_text(extracted) else "FAIL"
 
     return FieldResult(
         field="government_warning",
@@ -242,11 +274,14 @@ def compare_government_warning(expected: str, extracted: str | None) -> FieldRes
         extracted=extracted,
         strategy=WARNING_STRATEGY,
         score=100.0 if status == "PASS" else 0.0,
-        message="Government warning exact case-sensitive comparison; line breaks and repeated spaces ignored.",
+        message=(
+            "Government warning must match exact wording, punctuation, and case; "
+            "visual line wrapping is ignored."
+        ),
     )
 
 
-def _normalize_warning_whitespace(value: str) -> str:
+def _normalize_warning_text(value: str) -> str:
     return " ".join(value.split())
 
 

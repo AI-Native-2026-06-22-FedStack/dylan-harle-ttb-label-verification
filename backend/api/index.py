@@ -19,13 +19,13 @@ from app.models import (
     VerificationResult,
 )
 from app.vision import (
-    OpenAIVisionService,
     VisionConfigurationError,
     VisionInputError,
     VisionParseError,
     VisionProviderError,
     VisionService,
     VisionTimeoutError,
+    get_openai_vision_service_from_env,
 )
 
 
@@ -45,6 +45,24 @@ APPLICATION_FIELDS = (
     "net_contents",
     "government_warning",
 )
+FIELD_LABELS = {
+    "brand_name": "Brand Name",
+    "product_class": "Product Type",
+    "producer_name": "Producer Name",
+    "country_of_origin": "Country of Origin",
+    "alcohol_by_volume": "Alcohol by Volume",
+    "net_contents": "Net Contents",
+    "government_warning": "Government Warning",
+}
+FIELD_MAX_LENGTHS = {
+    "brand_name": 160,
+    "product_class": 160,
+    "producer_name": 200,
+    "country_of_origin": 120,
+    "alcohol_by_volume": 80,
+    "net_contents": 80,
+    "government_warning": 650,
+}
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -80,7 +98,7 @@ def health() -> dict[str, Any]:
 
 class EnvironmentVisionService:
     def extract(self, image_bytes: bytes, content_type: str | None = None):
-        return OpenAIVisionService.from_env().extract(image_bytes, content_type)
+        return get_openai_vision_service_from_env().extract(image_bytes, content_type)
 
 
 def get_vision_service() -> VisionService:
@@ -100,8 +118,10 @@ async def verify(
     vision_service: VisionService = Depends(get_vision_service),
 ) -> VerificationResult | JSONResponse:
     start_time = time.perf_counter()
+    timings: dict[str, int] = {}
 
     try:
+        phase_start = time.perf_counter()
         form_values = _validate_application_fields(
             {
                 "brand_name": brand_name,
@@ -114,11 +134,18 @@ async def verify(
             },
             start_time,
         )
+        timings["validation_ms"] = _elapsed_ms(phase_start)
+        phase_start = time.perf_counter()
         image_bytes = await _validate_and_read_image(image, start_time)
+        timings["image_read_ms"] = _elapsed_ms(phase_start)
 
         application = ApplicationData(**form_values)
+        phase_start = time.perf_counter()
         extracted = vision_service.extract(image_bytes, image.content_type)
+        timings["extraction_ms"] = _elapsed_ms(phase_start)
+        phase_start = time.perf_counter()
         result = verify_label(application, extracted)
+        timings["comparison_ms"] = _elapsed_ms(phase_start)
         result.latency_ms = _elapsed_ms(start_time)
 
         failed_fields = sum(field.status == "FAIL" for field in result.fields)
@@ -128,6 +155,7 @@ async def verify(
             image.content_type,
             len(image_bytes),
             failed_fields,
+            timings,
         )
 
         return result
@@ -196,8 +224,10 @@ async def verify_batch(
     vision_service: VisionService = Depends(get_vision_service),
 ) -> BatchVerificationResult | JSONResponse:
     start_time = time.perf_counter()
+    timings: dict[str, int] = {}
 
     try:
+        phase_start = time.perf_counter()
         form_values = _validate_application_fields(
             {
                 "brand_name": brand_name,
@@ -210,7 +240,10 @@ async def verify_batch(
             },
             start_time,
         )
+        timings["validation_ms"] = _elapsed_ms(phase_start)
+        phase_start = time.perf_counter()
         upload_items = await _validate_and_read_batch_images(images, start_time)
+        timings["image_read_ms"] = _elapsed_ms(phase_start)
         application = ApplicationData(**form_values)
         concurrency = _batch_concurrency()
         semaphore = asyncio.Semaphore(concurrency)
@@ -231,7 +264,7 @@ async def verify_batch(
         )
         summary = _batch_summary(items)
         latency_ms = _elapsed_ms(start_time)
-        _log_batch_completion(summary, latency_ms, concurrency)
+        _log_batch_completion(summary, latency_ms, concurrency, timings)
 
         return BatchVerificationResult(
             summary=summary,
@@ -263,12 +296,13 @@ def _validate_application_fields(
 
     for field in APPLICATION_FIELDS:
         value = values[field]
+        label = FIELD_LABELS[field]
 
         if value is None:
             raise _http_error(
                 422,
                 "missing_required_field",
-                f"{field} is required.",
+                f"Please enter {label}.",
                 start_time,
             )
 
@@ -278,7 +312,17 @@ def _validate_application_fields(
             raise _http_error(
                 422,
                 "missing_required_field",
-                f"{field} cannot be blank.",
+                f"Please enter {label}.",
+                start_time,
+            )
+
+        max_length = FIELD_MAX_LENGTHS[field]
+
+        if len(cleaned_value) > max_length:
+            raise _http_error(
+                422,
+                "invalid_field_value",
+                f"{label} is too long. Please use {max_length} characters or fewer.",
                 start_time,
             )
 
@@ -422,14 +466,29 @@ async def _verify_batch_item(
 
     async with semaphore:
         try:
+            phase_start = time.perf_counter()
             extracted = await asyncio.to_thread(
                 vision_service.extract,
                 image_bytes,
                 content_type,
             )
+            extraction_ms = _elapsed_ms(phase_start)
+            phase_start = time.perf_counter()
             result = verify_label(application, extracted)
+            comparison_ms = _elapsed_ms(phase_start)
             item_latency_ms = _elapsed_ms(item_start)
             result.latency_ms = item_latency_ms
+            logger.info(
+                "verify batch item completed index=%s status=%s latency_ms=%s "
+                "extraction_ms=%s comparison_ms=%s content_type=%s bytes=%s",
+                index,
+                result.verdict,
+                item_latency_ms,
+                extraction_ms,
+                comparison_ms,
+                content_type,
+                len(image_bytes),
+            )
 
             return BatchItemResult(
                 index=index,
@@ -531,11 +590,24 @@ def _log_completion(
     content_type: str | None,
     byte_size: int,
     failed_fields: int,
+    timings: dict[str, int],
 ) -> None:
     log_message = (
-        "verify completed verdict=%s latency_ms=%s content_type=%s bytes=%s failed_fields=%s"
+        "verify completed verdict=%s latency_ms=%s content_type=%s bytes=%s "
+        "failed_fields=%s validation_ms=%s image_read_ms=%s extraction_ms=%s "
+        "comparison_ms=%s"
     )
-    log_args = (verdict, latency_ms, content_type, byte_size, failed_fields)
+    log_args = (
+        verdict,
+        latency_ms,
+        content_type,
+        byte_size,
+        failed_fields,
+        timings.get("validation_ms", 0),
+        timings.get("image_read_ms", 0),
+        timings.get("extraction_ms", 0),
+        timings.get("comparison_ms", 0),
+    )
 
     if latency_ms > LATENCY_BUDGET_MS:
         logger.warning(log_message, *log_args)
@@ -559,10 +631,11 @@ def _log_batch_completion(
     summary: BatchSummary,
     latency_ms: int,
     concurrency: int,
+    timings: dict[str, int],
 ) -> None:
     log_message = (
         "verify batch completed total=%s passed=%s needs_review=%s errors=%s "
-        "latency_ms=%s concurrency=%s"
+        "latency_ms=%s concurrency=%s validation_ms=%s image_read_ms=%s"
     )
     log_args = (
         summary.total,
@@ -571,6 +644,8 @@ def _log_batch_completion(
         summary.errors,
         latency_ms,
         concurrency,
+        timings.get("validation_ms", 0),
+        timings.get("image_read_ms", 0),
     )
 
     if latency_ms > LATENCY_BUDGET_MS:

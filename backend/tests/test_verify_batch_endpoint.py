@@ -5,7 +5,7 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
-from api.index import MAX_BATCH_IMAGES, MAX_UPLOAD_BYTES, app, get_vision_service
+from api.index import FIELD_LABELS, MAX_BATCH_IMAGES, MAX_UPLOAD_BYTES, app, get_vision_service
 from app.models import ExtractedLabel
 from app.vision import VisionProviderError
 
@@ -203,7 +203,7 @@ def test_verify_batch_rejects_blank_shared_field(client: TestClient):
     assert response.status_code == 422
     error = error_payload(response)
     assert error["code"] == "missing_required_field"
-    assert "brand_name" in error["message"]
+    assert error["message"] == f"Please enter {FIELD_LABELS['brand_name']}."
 
 
 def test_verify_batch_uses_bounded_concurrency(client: TestClient, monkeypatch: pytest.MonkeyPatch):

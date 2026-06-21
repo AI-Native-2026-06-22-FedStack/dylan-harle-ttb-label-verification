@@ -102,6 +102,27 @@ def test_country_synonym_usa_matches_united_states():
     assert result.status == "PASS"
 
 
+@pytest.mark.parametrize(
+    "extracted",
+    [
+        "Product of United States",
+        "Product of the United States",
+        "Country of Origin: USA",
+        "Imported from United States",
+    ],
+)
+def test_country_origin_prefix_matches_canonical_country(extracted):
+    result = compare_country_of_origin("United States", extracted)
+
+    assert result.status == "PASS"
+
+
+def test_country_origin_prefix_does_not_hide_wrong_country():
+    result = compare_country_of_origin("United States", "Product of Mexico")
+
+    assert result.status == "FAIL"
+
+
 def test_government_warning_title_case_fails():
     title_case_warning = WARNING.title()
 

@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api.index as api_index
-from api.index import MAX_UPLOAD_BYTES, app, get_vision_service
+from api.index import FIELD_LABELS, FIELD_MAX_LENGTHS, MAX_UPLOAD_BYTES, app, get_vision_service
 from app.models import ExtractedLabel
 from app.vision import (
     FakeVisionService,
@@ -117,6 +117,8 @@ def test_verify_logs_warning_when_latency_exceeds_budget(
     assert response.status_code == 200
     assert response.json()["latency_ms"] == 5100
     assert "verify completed verdict=PASS latency_ms=5100" in caplog.text
+    assert "validation_ms=" in caplog.text
+    assert "extraction_ms=" in caplog.text
 
 
 def test_verify_needs_review_returns_expected_and_extracted_values(client: TestClient):
@@ -192,7 +194,8 @@ def test_verify_missing_field_returns_shaped_422_without_calling_service(
     assert response.status_code == 422
     error = error_payload(response)
     assert error["code"] == "missing_required_field"
-    assert field in error["message"]
+    assert error["message"] == f"Please enter {FIELD_LABELS[field]}."
+    assert "_" not in error["message"]
     assert fake_service.calls == []
 
 
@@ -209,7 +212,30 @@ def test_verify_blank_field_returns_shaped_422_without_calling_service(
     assert response.status_code == 422
     error = error_payload(response)
     assert error["code"] == "missing_required_field"
-    assert field in error["message"]
+    assert error["message"] == f"Please enter {FIELD_LABELS[field]}."
+    assert "_" not in error["message"]
+    assert fake_service.calls == []
+
+
+@pytest.mark.parametrize("field", list(valid_form().keys()))
+def test_verify_too_long_field_returns_friendly_422_without_calling_service(
+    client: TestClient,
+    field: str,
+):
+    fake_service = FakeVisionService(result=extracted_label())
+    override_vision_service(fake_service)
+    too_long_value = "x" * (FIELD_MAX_LENGTHS[field] + 1)
+
+    response = client.post("/verify", data=valid_form(**{field: too_long_value}), files=image_file())
+
+    assert response.status_code == 422
+    error = error_payload(response)
+    assert error["code"] == "invalid_field_value"
+    assert error["message"] == (
+        f"{FIELD_LABELS[field]} is too long. "
+        f"Please use {FIELD_MAX_LENGTHS[field]} characters or fewer."
+    )
+    assert "_" not in error["message"]
     assert fake_service.calls == []
 
 

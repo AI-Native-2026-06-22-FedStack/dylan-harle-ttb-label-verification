@@ -8,7 +8,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:800
 const MAX_ORIGINAL_BYTES = 20 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 const MAX_BATCH_IMAGES = 10;
-const MAX_IMAGE_EDGE = 1600;
+const MAX_IMAGE_EDGE = 1280;
 const JPEG_QUALITY = 0.85;
 const MIN_JPEG_QUALITY = 0.82;
 const SUPPORTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -17,13 +17,13 @@ const STANDARD_WARNING =
   "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD NOT DRINK ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF BIRTH DEFECTS. (2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR ABILITY TO DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS.";
 
 const FIELD_CONFIGS = [
-  { key: "brand_name", label: "Brand Name", type: "input" },
-  { key: "product_class", label: "Product Type", type: "input" },
-  { key: "producer_name", label: "Producer Name", type: "input" },
-  { key: "country_of_origin", label: "Country of Origin", type: "input" },
-  { key: "alcohol_by_volume", label: "Alcohol by Volume", type: "input" },
-  { key: "net_contents", label: "Net Contents", type: "input" },
-  { key: "government_warning", label: "Government Warning", type: "textarea" },
+  { key: "brand_name", label: "Brand Name", type: "input", maxLength: 160 },
+  { key: "product_class", label: "Product Type", type: "input", maxLength: 160 },
+  { key: "producer_name", label: "Producer Name", type: "input", maxLength: 200 },
+  { key: "country_of_origin", label: "Country of Origin", type: "input", maxLength: 120 },
+  { key: "alcohol_by_volume", label: "Alcohol by Volume", type: "input", maxLength: 80 },
+  { key: "net_contents", label: "Net Contents", type: "input", maxLength: 80 },
+  { key: "government_warning", label: "Government Warning", type: "textarea", maxLength: 650 },
 ];
 
 const INITIAL_FORM = {
@@ -40,6 +40,8 @@ function App() {
   const singleFileInputRef = useRef(null);
   const batchFileInputRef = useRef(null);
   const batchProgressTimerRef = useRef(null);
+  const singleErrorRef = useRef(null);
+  const batchErrorRef = useRef(null);
   const [mode, setMode] = useState("single");
   const [formValues, setFormValues] = useState(INITIAL_FORM);
 
@@ -88,6 +90,18 @@ function App() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (errorMessage) {
+      singleErrorRef.current?.focus();
+    }
+  }, [errorMessage]);
+
+  useEffect(() => {
+    if (batchErrorMessage) {
+      batchErrorRef.current?.focus();
+    }
+  }, [batchErrorMessage]);
 
   function updateField(field, value) {
     setFormValues((current) => ({
@@ -308,7 +322,20 @@ function App() {
 
   function validateFormFields() {
     const missingField = FIELD_CONFIGS.find((field) => formValues[field.key].trim() === "");
-    return missingField ? `Please enter ${missingField.label}.` : "";
+
+    if (missingField) {
+      return `Please enter ${missingField.label}.`;
+    }
+
+    const longField = FIELD_CONFIGS.find(
+      (field) => formValues[field.key].trim().length > field.maxLength,
+    );
+
+    if (longField) {
+      return `${longField.label} is too long. Please use ${longField.maxLength} characters or fewer.`;
+    }
+
+    return "";
   }
 
   function clearSelectedImage() {
@@ -355,20 +382,18 @@ function App() {
         <h1 id="page-title">TTB Label Verification</h1>
       </section>
 
-      <div className="mode-switch" role="tablist" aria-label="Verification mode">
+      <div className="mode-switch" aria-label="Verification mode">
         <button
-          aria-selected={mode === "single"}
+          aria-pressed={mode === "single"}
           className={mode === "single" ? "active" : ""}
-          role="tab"
           type="button"
           onClick={() => switchMode("single")}
         >
           One Label
         </button>
         <button
-          aria-selected={mode === "batch"}
+          aria-pressed={mode === "batch"}
           className={mode === "batch" ? "active" : ""}
-          role="tab"
           type="button"
           onClick={() => switchMode("batch")}
         >
@@ -378,7 +403,7 @@ function App() {
 
       {mode === "single" ? (
         <>
-          <form className="verification-layout" onSubmit={handleSubmit}>
+          <form className="verification-layout" aria-busy={isBusy} onSubmit={handleSubmit}>
             <section className="photo-section" aria-labelledby="photo-heading">
               <div>
                 <h2 id="photo-heading">Label Photo</h2>
@@ -386,6 +411,7 @@ function App() {
               </div>
 
               <button
+                aria-controls="single-label-photo"
                 className="file-button"
                 disabled={isBusy}
                 type="button"
@@ -394,10 +420,13 @@ function App() {
                 Choose Label Photo
               </button>
               <input
+                id="single-label-photo"
                 ref={singleFileInputRef}
                 className="file-input"
                 type="file"
+                aria-label="Choose one label photo"
                 accept="image/jpeg,image/png,image/webp"
+                disabled={isBusy}
                 onChange={handleImageChange}
               />
 
@@ -417,13 +446,13 @@ function App() {
             <FieldsSection formValues={formValues} isBusy={isBusy} updateField={updateField} />
 
             {errorMessage ? (
-              <div className="alert" role="alert">
+              <div className="alert" ref={singleErrorRef} role="alert" tabIndex={-1}>
                 {errorMessage}
               </div>
             ) : null}
 
             {isBusy ? (
-              <div className="status-band" aria-live="polite">
+              <div className="status-band" role="status">
                 {isProcessingImage ? "Preparing the photo now." : "Checking the photo now."}
               </div>
             ) : null}
@@ -450,7 +479,7 @@ function App() {
         </>
       ) : (
         <>
-          <form className="verification-layout" onSubmit={handleBatchSubmit}>
+          <form className="verification-layout" aria-busy={isBatchBusy} onSubmit={handleBatchSubmit}>
             <section className="photo-section" aria-labelledby="batch-photo-heading">
               <div>
                 <h2 id="batch-photo-heading">Label Photos</h2>
@@ -458,6 +487,7 @@ function App() {
               </div>
 
               <button
+                aria-controls="batch-label-photos"
                 className="file-button"
                 disabled={isBatchBusy}
                 type="button"
@@ -466,11 +496,14 @@ function App() {
                 Choose Label Photos
               </button>
               <input
+                id="batch-label-photos"
                 ref={batchFileInputRef}
                 className="file-input"
                 type="file"
                 multiple
+                aria-label="Choose label photos for batch verification"
                 accept="image/jpeg,image/png,image/webp"
+                disabled={isBatchBusy}
                 onChange={handleBatchFilesChange}
               />
 
@@ -496,21 +529,21 @@ function App() {
             <FieldsSection formValues={formValues} isBusy={isBatchBusy} updateField={updateField} />
 
             {batchErrorMessage ? (
-              <div className="alert" role="alert">
+              <div className="alert" ref={batchErrorRef} role="alert" tabIndex={-1}>
                 {batchErrorMessage}
               </div>
             ) : null}
 
             {isPreparingBatch ? (
-              <div className="status-band" aria-live="polite">
+              <div className="status-band" role="status">
                 Preparing photos {batchPrepareProgress.done} of {batchPrepareProgress.total}.
               </div>
             ) : null}
 
             {showBatchServerProgress ? (
-              <div className="status-band progress-band" aria-live="polite">
+              <div className="status-band progress-band" role="status">
                 <span>Checking labels now.</span>
-                <span className="progress-track">
+                <span className="progress-track" aria-hidden="true">
                   <span />
                 </span>
               </div>
@@ -556,19 +589,26 @@ function FieldsSection({ formValues, isBusy, updateField }) {
         {FIELD_CONFIGS.map((field) => (
           <label
             className={field.type === "textarea" ? "form-field form-field-wide" : "form-field"}
+            htmlFor={`field-${field.key}`}
             key={field.key}
           >
             <span>{field.label}</span>
             {field.type === "textarea" ? (
               <textarea
+                id={`field-${field.key}`}
                 disabled={isBusy}
+                maxLength={field.maxLength}
+                required
                 rows={5}
                 value={formValues[field.key]}
                 onChange={(event) => updateField(field.key, event.target.value)}
               />
             ) : (
               <input
+                id={`field-${field.key}`}
                 disabled={isBusy}
+                maxLength={field.maxLength}
+                required
                 type="text"
                 value={formValues[field.key]}
                 onChange={(event) => updateField(field.key, event.target.value)}
