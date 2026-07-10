@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from collections.abc import Iterator
@@ -53,10 +54,10 @@ class MappingVisionService:
 def valid_form(**overrides: str) -> dict[str, str]:
     form = {
         "brand_name": "Acme Cellars",
-        "product_class": "Red Wine",
-        "producer_name": "Acme Winery LLC",
+        "class_type": "Red Wine",
+        "producer": "Acme Winery LLC",
         "country_of_origin": "United States",
-        "alcohol_by_volume": "13.5%",
+        "abv": "13.5%",
         "net_contents": "750 mL",
         "government_warning": WARNING,
     }
@@ -64,13 +65,18 @@ def valid_form(**overrides: str) -> dict[str, str]:
     return form
 
 
+def batch_data(*applications: dict[str, str]) -> dict[str, str]:
+    records = applications or (valid_form(),)
+    return {"applications": json.dumps(records)}
+
+
 def extracted_label(**overrides: str | None) -> ExtractedLabel:
     label = {
         "brand_name": "ACME CELLARS",
-        "product_class": "Red Wine",
-        "producer_name": "Acme Winery LLC",
+        "class_type": "Red Wine",
+        "producer": "Acme Winery LLC",
         "country_of_origin": "United States",
-        "alcohol_by_volume": "13.5% Alc./Vol.",
+        "abv": "13.5% Alc./Vol.",
         "net_contents": "750 mL",
         "government_warning": WARNING,
     }
@@ -107,11 +113,15 @@ def test_verify_batch_success_all_pass(client: TestClient):
     )
     override_vision_service(service)
 
-    response = client.post("/verify/batch", data=valid_form(), files=image_files(b"one", b"two", b"three"))
+    response = client.post(
+        "/verify/batch",
+        data=batch_data(valid_form(), valid_form(), valid_form()),
+        files=image_files(b"one", b"two", b"three"),
+    )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"] == {"total": 3, "passed": 3, "needs_review": 0, "errors": 0}
+    assert payload["summary"] == {"total": 3, "passed": 3, "needs_review": 0}
     assert isinstance(payload["latency_ms"], int)
     assert [item["index"] for item in payload["items"]] == [0, 1, 2]
     assert [item["filename"] for item in payload["items"]] == [
@@ -119,8 +129,8 @@ def test_verify_batch_success_all_pass(client: TestClient):
         "label-2.jpg",
         "label-3.jpg",
     ]
-    assert all(item["status"] == "PASS" for item in payload["items"])
-    assert all(item["result"]["verdict"] == "PASS" for item in payload["items"])
+    assert all(item["status"] == "APPROVED" for item in payload["items"])
+    assert all(item["result"]["overall_verdict"] == "APPROVED" for item in payload["items"])
 
 
 def test_verify_batch_mixed_statuses_and_item_error_isolation(client: TestClient):
@@ -135,22 +145,22 @@ def test_verify_batch_mixed_statuses_and_item_error_isolation(client: TestClient
 
     response = client.post(
         "/verify/batch",
-        data=valid_form(),
+        data=batch_data(valid_form(), valid_form(), valid_form()),
         files=image_files(b"pass", b"review", b"error"),
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"] == {"total": 3, "passed": 1, "needs_review": 1, "errors": 1}
-    assert [item["status"] for item in payload["items"]] == ["PASS", "NEEDS_REVIEW", "ERROR"]
-    assert payload["items"][0]["result"]["verdict"] == "PASS"
-    assert payload["items"][1]["result"]["verdict"] == "NEEDS_REVIEW"
+    assert payload["summary"] == {"total": 3, "passed": 1, "needs_review": 2}
+    assert [item["status"] for item in payload["items"]] == ["APPROVED", "NEEDS_REVIEW", "ERROR"]
+    assert payload["items"][0]["result"]["overall_verdict"] == "APPROVED"
+    assert payload["items"][1]["result"]["overall_verdict"] == "NEEDS_REVIEW"
     assert payload["items"][2]["result"] is None
     assert payload["items"][2]["error"]["code"] == "extraction_unavailable"
 
 
 def test_verify_batch_rejects_missing_images(client: TestClient):
-    response = client.post("/verify/batch", data=valid_form())
+    response = client.post("/verify/batch", data=batch_data())
 
     assert response.status_code == 422
     error = error_payload(response)
@@ -161,7 +171,7 @@ def test_verify_batch_rejects_missing_images(client: TestClient):
 def test_verify_batch_rejects_too_many_images(client: TestClient):
     files = image_files(*[f"image-{index}".encode() for index in range(MAX_BATCH_IMAGES + 1)])
 
-    response = client.post("/verify/batch", data=valid_form(), files=files)
+    response = client.post("/verify/batch", data=batch_data(*[valid_form() for _ in files]), files=files)
 
     assert response.status_code == 422
     error = error_payload(response)
@@ -172,7 +182,7 @@ def test_verify_batch_rejects_too_many_images(client: TestClient):
 def test_verify_batch_rejects_unsupported_content_type(client: TestClient):
     response = client.post(
         "/verify/batch",
-        data=valid_form(),
+        data=batch_data(),
         files=[("images", ("label.txt", b"not an image", "text/plain"))],
     )
 
@@ -184,7 +194,7 @@ def test_verify_batch_rejects_unsupported_content_type(client: TestClient):
 def test_verify_batch_rejects_oversized_image(client: TestClient):
     response = client.post(
         "/verify/batch",
-        data=valid_form(),
+        data=batch_data(),
         files=image_files(b"x" * (MAX_UPLOAD_BYTES + 1)),
     )
 
@@ -193,10 +203,10 @@ def test_verify_batch_rejects_oversized_image(client: TestClient):
     assert error["code"] == "image_too_large"
 
 
-def test_verify_batch_rejects_blank_shared_field(client: TestClient):
+def test_verify_batch_rejects_blank_application_field(client: TestClient):
     response = client.post(
         "/verify/batch",
-        data=valid_form(brand_name="   "),
+        data=batch_data(valid_form(brand_name="   ")),
         files=image_files(b"one"),
     )
 
@@ -204,6 +214,65 @@ def test_verify_batch_rejects_blank_shared_field(client: TestClient):
     error = error_payload(response)
     assert error["code"] == "missing_required_field"
     assert error["message"] == f"Please enter {FIELD_LABELS['brand_name']}."
+
+
+def test_verify_batch_rejects_missing_applications(client: TestClient):
+    response = client.post("/verify/batch", files=image_files(b"one"))
+
+    assert response.status_code == 422
+    error = error_payload(response)
+    assert error["code"] == "missing_required_field"
+    assert "application data" in error["message"]
+
+
+def test_verify_batch_rejects_invalid_applications_json(client: TestClient):
+    response = client.post(
+        "/verify/batch",
+        data={"applications": "not-json"},
+        files=image_files(b"one"),
+    )
+
+    assert response.status_code == 422
+    error = error_payload(response)
+    assert error["code"] == "invalid_field_value"
+    assert "valid JSON" in error["message"]
+
+
+def test_verify_batch_rejects_application_count_mismatch(client: TestClient):
+    response = client.post(
+        "/verify/batch",
+        data=batch_data(valid_form()),
+        files=image_files(b"one", b"two"),
+    )
+
+    assert response.status_code == 422
+    error = error_payload(response)
+    assert error["code"] == "invalid_field_value"
+    assert "one application record" in error["message"]
+
+
+def test_verify_batch_uses_per_image_application_data(client: TestClient):
+    service = MappingVisionService(
+        {
+            b"one": extracted_label(brand_name="First Brand"),
+            b"two": extracted_label(brand_name="Second Brand"),
+        }
+    )
+    override_vision_service(service)
+
+    response = client.post(
+        "/verify/batch",
+        data=batch_data(
+            valid_form(brand_name="First Brand"),
+            valid_form(brand_name="Second Brand"),
+        ),
+        files=image_files(b"one", b"two"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"] == {"total": 2, "passed": 2, "needs_review": 0}
+    assert [item["status"] for item in payload["items"]] == ["APPROVED", "APPROVED"]
 
 
 def test_verify_batch_uses_bounded_concurrency(client: TestClient, monkeypatch: pytest.MonkeyPatch):
@@ -219,7 +288,11 @@ def test_verify_batch_uses_bounded_concurrency(client: TestClient, monkeypatch: 
     override_vision_service(service)
     start_time = time.perf_counter()
 
-    response = client.post("/verify/batch", data=valid_form(), files=image_files(b"one", b"two", b"three"))
+    response = client.post(
+        "/verify/batch",
+        data=batch_data(valid_form(), valid_form(), valid_form()),
+        files=image_files(b"one", b"two", b"three"),
+    )
 
     elapsed = time.perf_counter() - start_time
     assert response.status_code == 200

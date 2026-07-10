@@ -20,10 +20,10 @@ WARNING = (
 
 VALID_FORM = {
     "brand_name": "Acme Cellars",
-    "product_class": "Red Wine",
-    "producer_name": "Acme Winery LLC",
+    "class_type": "Red Wine",
+    "producer": "Acme Winery LLC",
     "country_of_origin": "United States",
-    "alcohol_by_volume": "13.5%",
+    "abv": "13.5%",
     "net_contents": "750 mL",
     "government_warning": WARNING,
 }
@@ -91,7 +91,7 @@ def run_checklist(
     valid_payload = post_verify(client, base_url, VALID_FORM, image_bytes(valid_image), "valid_label")
     results.append(valid_payload)
     require(valid_payload["status_code"] == 200, "valid label did not return 200")
-    require(valid_payload["payload"]["verdict"] == "PASS", "valid label did not pass")
+    require(valid_payload["payload"]["overall_verdict"] == "APPROVED", "valid label did not pass")
     require(
         valid_payload["payload"]["latency_ms"] < latency_budget_ms,
         "valid label server latency was not under 5 seconds",
@@ -108,7 +108,7 @@ def run_checklist(
     results.append(mismatch_payload)
     require(mismatch_payload["status_code"] == 200, "mismatch did not return 200")
     require(
-        mismatch_payload["payload"]["verdict"] == "NEEDS_REVIEW",
+        mismatch_payload["payload"]["overall_verdict"] == "NEEDS_REVIEW",
         "mismatch did not return NEEDS_REVIEW",
     )
     require(field_status(mismatch_payload["payload"], "brand_name") == "FAIL", "brand mismatch did not fail")
@@ -123,9 +123,9 @@ def run_checklist(
     )
     results.append(case_only_payload)
     require(case_only_payload["status_code"] == 200, "case-only check did not return 200")
-    require(case_only_payload["payload"]["verdict"] == "PASS", "case-only brand did not pass")
+    require(case_only_payload["payload"]["overall_verdict"] == "APPROVED", "case-only brand did not pass")
 
-    require(field_status(valid_payload["payload"], "alcohol_by_volume") == "PASS", "ABV normalization failed")
+    require(field_status(valid_payload["payload"], "abv") == "PASS", "ABV normalization failed")
     require(field_status(valid_payload["payload"], "net_contents") == "PASS", "unit normalization failed")
     require(field_status(valid_payload["payload"], "government_warning") == "PASS", "correct warning failed")
 
@@ -171,11 +171,11 @@ def run_checklist(
     )
     if imperfect_payload["status_code"] == 200:
         require(
-            imperfect_payload["payload"]["verdict"] in {"PASS", "NEEDS_REVIEW"},
+            imperfect_payload["payload"]["overall_verdict"] in {"APPROVED", "NEEDS_REVIEW"},
             "imperfect image returned an unexpected verdict",
         )
         require(
-            isinstance(imperfect_payload["payload"].get("fields"), list),
+            isinstance(imperfect_payload["payload"].get("results"), list),
             "imperfect image success response was not shaped",
         )
     else:
@@ -221,8 +221,7 @@ def run_checklist(
         batch_payload["payload"]["summary"] == {
             "total": 3,
             "passed": 1,
-            "needs_review": 1,
-            "errors": 1,
+            "needs_review": 2,
         },
         "batch summary counts were not correct",
     )
@@ -240,7 +239,7 @@ def run_checklist(
     server_latencies = [item["payload"]["latency_ms"] for item in speed_results]
     wall_latencies = [item["wall_ms"] for item in speed_results]
     require(all(item["status_code"] == 200 for item in speed_results), "a speed run failed")
-    require(all(item["payload"]["verdict"] == "PASS" for item in speed_results), "a speed run did not pass")
+    require(all(item["payload"]["overall_verdict"] == "APPROVED" for item in speed_results), "a speed run did not pass")
     require(
         max(server_latencies) < latency_budget_ms,
         f"single-label max server latency was {max(server_latencies)} ms",
@@ -285,7 +284,7 @@ def post_batch(
         check,
         lambda: client.post(
             f"{base_url}/verify/batch",
-            data=form,
+            data={"applications": json.dumps([form for _ in images])},
             files=[("images", image) for image in images],
         ),
     )
@@ -380,7 +379,7 @@ def image_bytes(image: Image.Image) -> bytes:
 
 
 def field_status(payload: dict[str, Any], field_name: str) -> str:
-    for field in payload["fields"]:
+    for field in payload["results"]:
         if field["field"] == field_name:
             return field["status"]
 

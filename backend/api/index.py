@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import time
@@ -38,28 +39,28 @@ LATENCY_BUDGET_MS = 5000
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 APPLICATION_FIELDS = (
     "brand_name",
-    "product_class",
-    "producer_name",
+    "class_type",
+    "producer",
     "country_of_origin",
-    "alcohol_by_volume",
+    "abv",
     "net_contents",
     "government_warning",
 )
 FIELD_LABELS = {
     "brand_name": "Brand Name",
-    "product_class": "Product Type",
-    "producer_name": "Producer Name",
+    "class_type": "Product Type",
+    "producer": "Producer Name",
     "country_of_origin": "Country of Origin",
-    "alcohol_by_volume": "Alcohol by Volume",
+    "abv": "Alcohol by Volume",
     "net_contents": "Net Contents",
     "government_warning": "Government Warning",
 }
 FIELD_MAX_LENGTHS = {
     "brand_name": 160,
-    "product_class": 160,
-    "producer_name": 200,
+    "class_type": 160,
+    "producer": 200,
     "country_of_origin": 120,
-    "alcohol_by_volume": 80,
+    "abv": 80,
     "net_contents": 80,
     "government_warning": 650,
 }
@@ -109,10 +110,10 @@ def get_vision_service() -> VisionService:
 async def verify(
     image: UploadFile | None = File(default=None),
     brand_name: str | None = Form(default=None),
-    product_class: str | None = Form(default=None),
-    producer_name: str | None = Form(default=None),
+    class_type: str | None = Form(default=None),
+    producer: str | None = Form(default=None),
     country_of_origin: str | None = Form(default=None),
-    alcohol_by_volume: str | None = Form(default=None),
+    abv: str | None = Form(default=None),
     net_contents: str | None = Form(default=None),
     government_warning: str | None = Form(default=None),
     vision_service: VisionService = Depends(get_vision_service),
@@ -125,10 +126,10 @@ async def verify(
         form_values = _validate_application_fields(
             {
                 "brand_name": brand_name,
-                "product_class": product_class,
-                "producer_name": producer_name,
+                "class_type": class_type,
+                "producer": producer,
                 "country_of_origin": country_of_origin,
-                "alcohol_by_volume": alcohol_by_volume,
+                "abv": abv,
                 "net_contents": net_contents,
                 "government_warning": government_warning,
             },
@@ -141,16 +142,16 @@ async def verify(
 
         application = ApplicationData(**form_values)
         phase_start = time.perf_counter()
-        extracted = vision_service.extract(image_bytes, image.content_type)
+        extracted = await asyncio.to_thread(vision_service.extract, image_bytes, image.content_type)
         timings["extraction_ms"] = _elapsed_ms(phase_start)
         phase_start = time.perf_counter()
         result = verify_label(application, extracted)
         timings["comparison_ms"] = _elapsed_ms(phase_start)
         result.latency_ms = _elapsed_ms(start_time)
 
-        failed_fields = sum(field.status == "FAIL" for field in result.fields)
+        failed_fields = sum(field.status == "FAIL" for field in result.results)
         _log_completion(
-            result.verdict,
+            result.overall_verdict,
             result.latency_ms,
             image.content_type,
             len(image_bytes),
@@ -214,13 +215,7 @@ async def verify(
 @app.post("/verify/batch", response_model=BatchVerificationResult)
 async def verify_batch(
     images: list[UploadFile] | None = File(default=None),
-    brand_name: str | None = Form(default=None),
-    product_class: str | None = Form(default=None),
-    producer_name: str | None = Form(default=None),
-    country_of_origin: str | None = Form(default=None),
-    alcohol_by_volume: str | None = Form(default=None),
-    net_contents: str | None = Form(default=None),
-    government_warning: str | None = Form(default=None),
+    applications: str | None = Form(default=None),
     vision_service: VisionService = Depends(get_vision_service),
 ) -> BatchVerificationResult | JSONResponse:
     start_time = time.perf_counter()
@@ -228,23 +223,11 @@ async def verify_batch(
 
     try:
         phase_start = time.perf_counter()
-        form_values = _validate_application_fields(
-            {
-                "brand_name": brand_name,
-                "product_class": product_class,
-                "producer_name": producer_name,
-                "country_of_origin": country_of_origin,
-                "alcohol_by_volume": alcohol_by_volume,
-                "net_contents": net_contents,
-                "government_warning": government_warning,
-            },
-            start_time,
-        )
-        timings["validation_ms"] = _elapsed_ms(phase_start)
-        phase_start = time.perf_counter()
         upload_items = await _validate_and_read_batch_images(images, start_time)
         timings["image_read_ms"] = _elapsed_ms(phase_start)
-        application = ApplicationData(**form_values)
+        phase_start = time.perf_counter()
+        application_items = _validate_batch_applications(applications, len(upload_items), start_time)
+        timings["validation_ms"] = _elapsed_ms(phase_start)
         concurrency = _batch_concurrency()
         semaphore = asyncio.Semaphore(concurrency)
 
@@ -255,7 +238,7 @@ async def verify_batch(
                     item["filename"],
                     item["content"],
                     item["content_type"],
-                    application,
+                    application_items[item["index"]],
                     vision_service,
                     semaphore,
                 )
@@ -306,6 +289,14 @@ def _validate_application_fields(
                 start_time,
             )
 
+        if not isinstance(value, str):
+            raise _http_error(
+                422,
+                "invalid_field_value",
+                f"{label} must be text.",
+                start_time,
+            )
+
         cleaned_value = value.strip()
 
         if cleaned_value == "":
@@ -329,6 +320,65 @@ def _validate_application_fields(
         cleaned[field] = cleaned_value
 
     return cleaned
+
+
+def _validate_batch_applications(
+    applications: str | None,
+    image_count: int,
+    start_time: float,
+) -> list[ApplicationData]:
+    if applications is None:
+        raise _http_error(
+            422,
+            "missing_required_field",
+            "Please provide application data for each label image.",
+            start_time,
+        )
+
+    try:
+        parsed = json.loads(applications)
+    except json.JSONDecodeError:
+        raise _http_error(
+            422,
+            "invalid_field_value",
+            "Batch application data must be valid JSON.",
+            start_time,
+        ) from None
+
+    if not isinstance(parsed, list):
+        raise _http_error(
+            422,
+            "invalid_field_value",
+            "Batch application data must be a JSON array.",
+            start_time,
+        )
+
+    if len(parsed) != image_count:
+        raise _http_error(
+            422,
+            "invalid_field_value",
+            "Please provide one application record for each label image.",
+            start_time,
+        )
+
+    application_items: list[ApplicationData] = []
+
+    for index, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            raise _http_error(
+                422,
+                "invalid_field_value",
+                f"Application record {index + 1} must be an object.",
+                start_time,
+            )
+
+        cleaned = _validate_application_fields(
+            {field: item.get(field) for field in APPLICATION_FIELDS},
+            start_time,
+        )
+        application_items.append(ApplicationData(**cleaned))
+
+    return application_items
 
 
 async def _validate_and_read_batch_images(
@@ -482,7 +532,7 @@ async def _verify_batch_item(
                 "verify batch item completed index=%s status=%s latency_ms=%s "
                 "extraction_ms=%s comparison_ms=%s content_type=%s bytes=%s",
                 index,
-                result.verdict,
+                result.overall_verdict,
                 item_latency_ms,
                 extraction_ms,
                 comparison_ms,
@@ -493,7 +543,7 @@ async def _verify_batch_item(
             return BatchItemResult(
                 index=index,
                 filename=filename,
-                status=result.verdict,
+                status=result.overall_verdict,
                 result=result,
                 latency_ms=item_latency_ms,
             )
@@ -557,15 +607,13 @@ def _batch_item_error(
 
 
 def _batch_summary(items: list[BatchItemResult]) -> BatchSummary:
-    passed = sum(item.status == "PASS" for item in items)
-    needs_review = sum(item.status == "NEEDS_REVIEW" for item in items)
-    errors = sum(item.status == "ERROR" for item in items)
+    passed = sum(item.status == "APPROVED" for item in items)
+    needs_review = sum(item.status in {"NEEDS_REVIEW", "ERROR"} for item in items)
 
     return BatchSummary(
         total=len(items),
         passed=passed,
         needs_review=needs_review,
-        errors=errors,
     )
 
 
@@ -634,14 +682,13 @@ def _log_batch_completion(
     timings: dict[str, int],
 ) -> None:
     log_message = (
-        "verify batch completed total=%s passed=%s needs_review=%s errors=%s "
+        "verify batch completed total=%s passed=%s needs_review=%s "
         "latency_ms=%s concurrency=%s validation_ms=%s image_read_ms=%s"
     )
     log_args = (
         summary.total,
         summary.passed,
         summary.needs_review,
-        summary.errors,
         latency_ms,
         concurrency,
         timings.get("validation_ms", 0),

@@ -56,12 +56,14 @@ def image_bytes(size=(640, 480), image_format="PNG") -> bytes:
 def populated_payload(**overrides):
     payload = {
         "brand_name": "Acme Cellars",
-        "product_class": "Red Wine",
-        "producer_name": "Acme Winery LLC",
+        "class_type": "Red Wine",
+        "producer": "Acme Winery LLC",
         "country_of_origin": "United States",
-        "alcohol_by_volume": "13.5%",
+        "abv": "13.5%",
         "net_contents": "750 mL",
         "government_warning": WARNING,
+        "raw_text": f"Acme Cellars Red Wine 13.5% 750 mL {WARNING}",
+        "extraction_confidence": 0.94,
     }
     payload.update(overrides)
     return payload
@@ -94,6 +96,8 @@ def test_openai_service_uses_structured_parse_and_maps_populated_label():
     prompt = user_content[0]["text"]
     image_input = user_content[1]
     assert "government_warning" in prompt
+    assert "raw_text" in prompt
+    assert "extraction_confidence" in prompt
     assert "exactly and verbatim" in prompt
     assert image_input["detail"] == DEFAULT_IMAGE_DETAIL
     assert image_input["image_url"].startswith("data:image/jpeg;base64,")
@@ -102,8 +106,8 @@ def test_openai_service_uses_structured_parse_and_maps_populated_label():
 def test_openai_service_returns_partial_data_for_null_fields():
     fake_client = FakeOpenAIClient(
         parsed=populated_payload(
-            product_class=None,
-            producer_name=None,
+            class_type=None,
+            producer=None,
             government_warning=None,
         )
     )
@@ -112,8 +116,8 @@ def test_openai_service_returns_partial_data_for_null_fields():
     result = service.extract(image_bytes())
 
     assert result.brand_name == "Acme Cellars"
-    assert result.product_class is None
-    assert result.producer_name is None
+    assert result.class_type is None
+    assert result.producer is None
     assert result.government_warning is None
 
 

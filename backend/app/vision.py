@@ -34,12 +34,14 @@ VISION_SYSTEM_PROMPT = (
 VISION_EXTRACTION_PROMPT = """
 Extract only these fields from visible alcohol beverage label text:
 - brand_name
-- product_class
-- producer_name
+- class_type
+- producer
 - country_of_origin
-- alcohol_by_volume
+- abv
 - net_contents
 - government_warning
+- raw_text
+- extraction_confidence
 
 Rules:
 - Use only text visible in the image.
@@ -52,6 +54,8 @@ Rules:
   case, punctuation, wording, and spacing as much as the image allows.
 - If the government warning is only partly readable, return only confidently visible
   text or null; never fill gaps.
+- For raw_text, return the visible label text you relied on, without inventing text.
+- For extraction_confidence, return a number from 0.0 to 1.0 for the overall extraction.
 """.strip()
 
 
@@ -88,12 +92,14 @@ class VisionExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     brand_name: str | None
-    product_class: str | None
-    producer_name: str | None
+    class_type: str | None
+    producer: str | None
     country_of_origin: str | None
-    alcohol_by_volume: str | None
+    abv: str | None
     net_contents: str | None
     government_warning: str | None
+    raw_text: str | None
+    extraction_confidence: float | None
 
     def to_extracted_label(self) -> ExtractedLabel:
         return ExtractedLabel(**self.model_dump())

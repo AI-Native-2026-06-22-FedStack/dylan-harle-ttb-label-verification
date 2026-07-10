@@ -18,20 +18,20 @@ const STANDARD_WARNING =
 
 const FIELD_CONFIGS = [
   { key: "brand_name", label: "Brand Name", type: "input", maxLength: 160 },
-  { key: "product_class", label: "Product Type", type: "input", maxLength: 160 },
-  { key: "producer_name", label: "Producer Name", type: "input", maxLength: 200 },
+  { key: "class_type", label: "Product Type", type: "input", maxLength: 160 },
+  { key: "producer", label: "Producer Name", type: "input", maxLength: 200 },
   { key: "country_of_origin", label: "Country of Origin", type: "input", maxLength: 120 },
-  { key: "alcohol_by_volume", label: "Alcohol by Volume", type: "input", maxLength: 80 },
+  { key: "abv", label: "Alcohol by Volume", type: "input", maxLength: 80 },
   { key: "net_contents", label: "Net Contents", type: "input", maxLength: 80 },
   { key: "government_warning", label: "Government Warning", type: "textarea", maxLength: 650 },
 ];
 
 const INITIAL_FORM = {
   brand_name: "",
-  product_class: "",
-  producer_name: "",
+  class_type: "",
+  producer: "",
   country_of_origin: "",
-  alcohol_by_volume: "",
+  abv: "",
   net_contents: "",
   government_warning: STANDARD_WARNING,
 };
@@ -64,10 +64,11 @@ function App() {
 
   const isBusy = isProcessingImage || isSubmitting;
   const isBatchBusy = isPreparingBatch || isSubmittingBatch;
-  const verdictLabel = result?.verdict === "PASS" ? "APPROVED" : "NEEDS REVIEW";
+  const verdictLabel = result?.overall_verdict === "APPROVED" ? "APPROVED" : "NEEDS REVIEW";
   const checkedSeconds = useMemo(() => formatSeconds(result?.latency_ms), [result]);
   const batchSeconds = useMemo(() => formatSeconds(batchResult?.latency_ms), [batchResult]);
-  const selectedBatchItem = batchResult?.items?.[selectedBatchIndex] || null;
+  const selectedBatchFormItem = batchItems[selectedBatchIndex] || null;
+  const selectedBatchResultItem = batchResult?.items?.[selectedBatchIndex] || null;
 
   useEffect(() => {
     return () => {
@@ -108,6 +109,22 @@ function App() {
       ...current,
       [field]: value,
     }));
+  }
+
+  function updateBatchItemField(field, value) {
+    setBatchItems((current) =>
+      current.map((item, index) =>
+        index === selectedBatchIndex
+          ? {
+              ...item,
+              applicationValues: {
+                ...item.applicationValues,
+                [field]: value,
+              },
+            }
+          : item,
+      ),
+    );
   }
 
   function switchMode(nextMode) {
@@ -187,6 +204,7 @@ function App() {
         previewUrl,
         uploadFile: null,
         error: validationError,
+        applicationValues: { ...formValues },
       };
 
       if (!validationError) {
@@ -258,7 +276,7 @@ function App() {
     setBatchResult(null);
     setSelectedBatchIndex(0);
 
-    const formError = validateFormFields();
+    const formError = validateBatchFormFields();
     if (formError) {
       setBatchErrorMessage(formError);
       return;
@@ -281,10 +299,14 @@ function App() {
     }, 1000);
 
     try {
-      const body = buildFormData();
+      const body = new FormData();
       batchItems.forEach((item) => {
         body.append("images", item.uploadFile, item.uploadFile.name);
       });
+      body.append(
+        "applications",
+        JSON.stringify(batchItems.map((item) => cleanedFormValues(item.applicationValues))),
+      );
 
       const response = await fetch(`${API_BASE_URL}/verify/batch`, {
         method: "POST",
@@ -321,14 +343,31 @@ function App() {
   }
 
   function validateFormFields() {
-    const missingField = FIELD_CONFIGS.find((field) => formValues[field.key].trim() === "");
+    return validateApplicationValues(formValues);
+  }
+
+  function validateBatchFormFields() {
+    for (const [index, item] of batchItems.entries()) {
+      const error = validateApplicationValues(item.applicationValues);
+
+      if (error) {
+        setSelectedBatchIndex(index);
+        return error;
+      }
+    }
+
+    return "";
+  }
+
+  function validateApplicationValues(values) {
+    const missingField = FIELD_CONFIGS.find((field) => values[field.key].trim() === "");
 
     if (missingField) {
       return `Please enter ${missingField.label}.`;
     }
 
     const longField = FIELD_CONFIGS.find(
-      (field) => formValues[field.key].trim().length > field.maxLength,
+      (field) => values[field.key].trim().length > field.maxLength,
     );
 
     if (longField) {
@@ -336,6 +375,10 @@ function App() {
     }
 
     return "";
+  }
+
+  function cleanedFormValues(values) {
+    return Object.fromEntries(FIELD_CONFIGS.map((field) => [field.key, values[field.key].trim()]));
   }
 
   function clearSelectedImage() {
@@ -510,7 +553,12 @@ function App() {
               {batchItems.length ? (
                 <div className="batch-file-list">
                   {batchItems.map((item, index) => (
-                    <div className={`batch-file ${item.error ? "file-error" : ""}`} key={item.id}>
+                    <button
+                      className={`batch-file ${item.error ? "file-error" : ""} ${selectedBatchIndex === index ? "selected" : ""}`}
+                      key={item.id}
+                      type="button"
+                      onClick={() => setSelectedBatchIndex(index)}
+                    >
                       <img alt="" className="batch-thumb" src={item.previewUrl} />
                       <div>
                         <strong>
@@ -518,7 +566,7 @@ function App() {
                         </strong>
                         <p>{item.error || "Photo ready"}</p>
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               ) : (
@@ -526,7 +574,11 @@ function App() {
               )}
             </section>
 
-            <FieldsSection formValues={formValues} isBusy={isBatchBusy} updateField={updateField} />
+            <FieldsSection
+              formValues={selectedBatchFormItem?.applicationValues || INITIAL_FORM}
+              isBusy={isBatchBusy || !selectedBatchFormItem}
+              updateField={updateBatchItemField}
+            />
 
             {batchErrorMessage ? (
               <div className="alert" ref={batchErrorRef} role="alert" tabIndex={-1}>
@@ -571,7 +623,7 @@ function App() {
               batchResult={batchResult}
               batchSeconds={batchSeconds}
               selectedBatchIndex={selectedBatchIndex}
-              selectedBatchItem={selectedBatchItem}
+              selectedBatchItem={selectedBatchResultItem}
               setSelectedBatchIndex={setSelectedBatchIndex}
             />
           ) : null}
@@ -624,14 +676,14 @@ function FieldsSection({ formValues, isBusy, updateField }) {
 function SingleResultSection({ checkedSeconds, result, verdictLabel }) {
   return (
     <section className="results-section" aria-labelledby="results-heading" aria-live="polite">
-      <div className={`verdict-band ${result.verdict === "PASS" ? "approved" : "review"}`}>
+      <div className={`verdict-band ${result.overall_verdict === "APPROVED" ? "approved" : "review"}`}>
         <p>Result</p>
         <h2 id="results-heading">{verdictLabel}</h2>
         {checkedSeconds ? <span>Checked in {checkedSeconds} seconds</span> : null}
       </div>
 
       <div className="results-list">
-        {result.fields.map((field) => (
+        {result.results.map((field) => (
           <ResultRow field={field} key={field.field} />
         ))}
       </div>
@@ -660,10 +712,6 @@ function BatchResultsSection({
         <div>
           <p>Needs Review</p>
           <strong>{batchResult.summary.needs_review}</strong>
-        </div>
-        <div>
-          <p>Errors</p>
-          <strong>{batchResult.summary.errors}</strong>
         </div>
       </div>
       {batchSeconds ? <p className="batch-time">Checked in {batchSeconds} seconds</p> : null}
@@ -700,7 +748,7 @@ function BatchResultsSection({
 
               {selectedBatchItem.result ? (
                 <div className="results-list">
-                  {selectedBatchItem.result.fields.map((field) => (
+                  {selectedBatchItem.result.results.map((field) => (
                     <ResultRow field={field} key={field.field} />
                   ))}
                 </div>
@@ -726,16 +774,24 @@ function ResultRow({ field }) {
       <p className="field-reason">{isPass ? "Matches" : failureReason(field)}</p>
 
       {!isPass ? (
-        <div className="comparison-grid">
-          <div>
-            <span>Application Says</span>
-            <p>{displayValue(field.expected)}</p>
+        <>
+          <div className="comparison-grid">
+            <div>
+              <span>Application Says</span>
+              <p>{displayValue(field.expected)}</p>
+            </div>
+            <div>
+              <span>Found on Label</span>
+              <p>{displayValue(field.found)}</p>
+            </div>
           </div>
-          <div>
-            <span>Found on Label</span>
-            <p>{displayValue(field.extracted)}</p>
-          </div>
-        </div>
+          {field.field === "government_warning" ? (
+            <div className="alert">
+              <strong>Extracted warning</strong>
+              <p>{displayValue(field.found)}</p>
+            </div>
+          ) : null}
+        </>
       ) : null}
     </article>
   );
@@ -746,7 +802,7 @@ function labelForField(fieldName) {
 }
 
 function failureReason(field) {
-  const extracted = typeof field.extracted === "string" ? field.extracted.trim() : "";
+  const extracted = typeof field.found === "string" ? field.found.trim() : "";
   const message = field.message?.toLowerCase() || "";
 
   if (!extracted || message.includes("missing")) {
@@ -761,7 +817,7 @@ function failureReason(field) {
 }
 
 function statusLabel(status) {
-  if (status === "PASS") {
+  if (status === "APPROVED") {
     return "APPROVED";
   }
 
@@ -773,7 +829,7 @@ function statusLabel(status) {
 }
 
 function statusClass(status) {
-  if (status === "PASS") {
+  if (status === "APPROVED") {
     return "approved";
   }
 

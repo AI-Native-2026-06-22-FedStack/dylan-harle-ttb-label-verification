@@ -218,10 +218,18 @@ h3 {
   grid-template-columns: 92px 1fr;
   gap: 14px;
   align-items: center;
+  width: 100%;
   border: 2px solid #cad6e4;
   border-radius: 8px;
   background: #f8fafc;
   padding: 12px;
+  color: inherit;
+  text-align: left;
+}
+
+.batch-file.selected {
+  outline: 4px solid #f2b705;
+  outline-offset: 1px;
 }
 
 .batch-file.file-error {
@@ -316,6 +324,7 @@ h3 {
 .submit-button:focus-visible,
 .secondary-button:focus-visible,
 .batch-result-button:focus-visible,
+.batch-file:focus-visible,
 .alert:focus {
   outline: 4px solid #f2b705;
   outline-offset: 2px;
@@ -387,7 +396,7 @@ h3 {
 
 .batch-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 

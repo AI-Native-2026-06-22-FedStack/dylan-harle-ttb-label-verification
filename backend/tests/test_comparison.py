@@ -1,7 +1,9 @@
 import pytest
 
 from app.comparison import (
-    compare_alcohol_by_volume,
+    _parse_net_contents_ml,
+    _parse_percentage,
+    compare_abv,
     compare_brand_name,
     compare_country_of_origin,
     compare_government_warning,
@@ -22,10 +24,10 @@ WARNING = (
 def application_data(**overrides: str) -> ApplicationData:
     data = {
         "brand_name": "Acme Cellars",
-        "product_class": "Red Wine",
-        "producer_name": "Acme Winery LLC",
+        "class_type": "Red Wine",
+        "producer": "Acme Winery LLC",
         "country_of_origin": "United States",
-        "alcohol_by_volume": "13.5%",
+        "abv": "13.5%",
         "net_contents": "750 mL",
         "government_warning": WARNING,
     }
@@ -36,10 +38,10 @@ def application_data(**overrides: str) -> ApplicationData:
 def extracted_label(**overrides: str | None) -> ExtractedLabel:
     data = {
         "brand_name": "ACME CELLARS",
-        "product_class": "Red wine",
-        "producer_name": "Acme Winery, LLC",
+        "class_type": "Red wine",
+        "producer": "Acme Winery, LLC",
         "country_of_origin": "USA",
-        "alcohol_by_volume": "13.5% Alc./Vol.",
+        "abv": "13.5% Alc./Vol.",
         "net_contents": "750ml",
         "government_warning": WARNING,
     }
@@ -52,14 +54,14 @@ def extracted_label(**overrides: str | None) -> ExtractedLabel:
     [
         ("brand_name", "Acme Cellars", None),
         ("brand_name", "Acme Cellars", "   "),
-        ("product_class", "Red Wine", None),
-        ("product_class", "Red Wine", "   "),
-        ("producer_name", "Acme Winery LLC", None),
-        ("producer_name", "Acme Winery LLC", "   "),
+        ("class_type", "Red Wine", None),
+        ("class_type", "Red Wine", "   "),
+        ("producer", "Acme Winery LLC", None),
+        ("producer", "Acme Winery LLC", "   "),
         ("country_of_origin", "United States", None),
         ("country_of_origin", "United States", "   "),
-        ("alcohol_by_volume", "13.5%", None),
-        ("alcohol_by_volume", "13.5%", "   "),
+        ("abv", "13.5%", None),
+        ("abv", "13.5%", "   "),
         ("net_contents", "750 mL", None),
         ("net_contents", "750 mL", "   "),
         ("government_warning", WARNING, None),
@@ -71,11 +73,11 @@ def test_missing_or_blank_extracted_value_fails(field, expected, extracted):
     label = extracted_label(**{field: extracted})
 
     result = verify_label(app_data, label)
-    field_result = next(item for item in result.fields if item.field == field)
+    field_result = next(item for item in result.results if item.field == field)
 
     assert field_result.status == "FAIL"
-    assert field_result.extracted == extracted
-    assert result.verdict == "NEEDS_REVIEW"
+    assert field_result.found == extracted
+    assert result.overall_verdict == "NEEDS_REVIEW"
 
 
 def test_case_only_brand_difference_passes():
@@ -85,13 +87,33 @@ def test_case_only_brand_difference_passes():
 
 
 def test_abv_ignores_proof_when_percentage_matches():
-    result = compare_alcohol_by_volume("45%", "45% Alc./Vol. (90 Proof)")
+    result = compare_abv("45%", "45% Alc./Vol. (90 Proof)")
+
+    assert result.status == "PASS"
+
+
+def test_abv_parses_proof_as_half_percent():
+    assert _parse_percentage("90 Proof") == 45.0
+
+
+def test_abv_proof_matches_percentage():
+    result = compare_abv("45%", "90 Proof")
 
     assert result.status == "PASS"
 
 
 def test_net_contents_normalizes_spacing_and_unit_case():
     result = compare_net_contents("750 mL", "750ml")
+
+    assert result.status == "PASS"
+
+
+def test_net_contents_parses_fl_oz():
+    assert _parse_net_contents_ml("12 FL OZ") == pytest.approx(354.882, abs=0.001)
+
+
+def test_net_contents_fl_oz_matches_ml_with_tolerance():
+    result = compare_net_contents("355 mL", "12 FL OZ")
 
     assert result.status == "PASS"
 
@@ -158,7 +180,7 @@ def test_government_warning_line_breaks_pass():
     result = compare_government_warning(WARNING, wrapped_warning)
 
     assert result.status == "PASS"
-    assert result.extracted == wrapped_warning
+    assert result.found == wrapped_warning
 
 
 def test_government_warning_repeated_spaces_pass():
@@ -175,19 +197,19 @@ def test_misread_government_warning_returns_extracted_text():
     result = compare_government_warning(WARNING, misread_warning)
 
     assert result.status == "FAIL"
-    assert result.extracted == misread_warning
+    assert result.found == misread_warning
 
 
 def test_all_fields_pass_returns_pass_verdict():
     result = verify_label(application_data(), extracted_label())
 
-    assert result.verdict == "PASS"
-    assert len(result.fields) == 7
-    assert all(field.status == "PASS" for field in result.fields)
+    assert result.overall_verdict == "APPROVED"
+    assert len(result.results) == 7
+    assert all(field.status == "PASS" for field in result.results)
 
 
 def test_any_failed_field_returns_needs_review():
     result = verify_label(application_data(), extracted_label(brand_name="Different Brand"))
 
-    assert result.verdict == "NEEDS_REVIEW"
-    assert any(field.status == "FAIL" for field in result.fields)
+    assert result.overall_verdict == "NEEDS_REVIEW"
+    assert any(field.status == "FAIL" for field in result.results)

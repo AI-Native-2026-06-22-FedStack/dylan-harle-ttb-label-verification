@@ -38,10 +38,10 @@ def client() -> Iterator[TestClient]:
 def valid_form(**overrides: str) -> dict[str, str]:
     form = {
         "brand_name": "Acme Cellars",
-        "product_class": "Red Wine",
-        "producer_name": "Acme Winery LLC",
+        "class_type": "Red Wine",
+        "producer": "Acme Winery LLC",
         "country_of_origin": "United States",
-        "alcohol_by_volume": "13.5%",
+        "abv": "13.5%",
         "net_contents": "750 mL",
         "government_warning": WARNING,
     }
@@ -52,10 +52,10 @@ def valid_form(**overrides: str) -> dict[str, str]:
 def extracted_label(**overrides: str | None) -> ExtractedLabel:
     label = {
         "brand_name": "ACME CELLARS",
-        "product_class": "Red Wine",
-        "producer_name": "Acme Winery LLC",
+        "class_type": "Red Wine",
+        "producer": "Acme Winery LLC",
         "country_of_origin": "United States",
-        "alcohol_by_volume": "13.5% Alc./Vol.",
+        "abv": "13.5% Alc./Vol.",
         "net_contents": "750 mL",
         "government_warning": WARNING,
     }
@@ -92,14 +92,14 @@ def test_verify_success_returns_full_verification_result(client: TestClient):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["verdict"] == "PASS"
+    assert payload["overall_verdict"] == "APPROVED"
     assert isinstance(payload["latency_ms"], int)
-    assert len(payload["fields"]) == 7
+    assert len(payload["results"]) == 7
     assert fake_service.calls == [(b"fake image bytes", "image/jpeg")]
 
-    brand_result = next(field for field in payload["fields"] if field["field"] == "brand_name")
+    brand_result = next(field for field in payload["results"] if field["field"] == "brand_name")
     assert brand_result["expected"] == "Acme Cellars"
-    assert brand_result["extracted"] == "ACME CELLARS"
+    assert brand_result["found"] == "ACME CELLARS"
 
 
 def test_verify_logs_warning_when_latency_exceeds_budget(
@@ -116,7 +116,7 @@ def test_verify_logs_warning_when_latency_exceeds_budget(
 
     assert response.status_code == 200
     assert response.json()["latency_ms"] == 5100
-    assert "verify completed verdict=PASS latency_ms=5100" in caplog.text
+    assert "verify completed verdict=APPROVED latency_ms=5100" in caplog.text
     assert "validation_ms=" in caplog.text
     assert "extraction_ms=" in caplog.text
 
@@ -129,12 +129,12 @@ def test_verify_needs_review_returns_expected_and_extracted_values(client: TestC
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["verdict"] == "NEEDS_REVIEW"
+    assert payload["overall_verdict"] == "NEEDS_REVIEW"
 
-    brand_result = next(field for field in payload["fields"] if field["field"] == "brand_name")
+    brand_result = next(field for field in payload["results"] if field["field"] == "brand_name")
     assert brand_result["status"] == "FAIL"
     assert brand_result["expected"] == "Acme Cellars"
-    assert brand_result["extracted"] == "Different Brand"
+    assert brand_result["found"] == "Different Brand"
 
 
 def test_verify_warning_mismatch_surfaces_extracted_warning_text(client: TestClient):
@@ -146,11 +146,11 @@ def test_verify_warning_mismatch_surfaces_extracted_warning_text(client: TestCli
 
     assert response.status_code == 200
     warning_result = next(
-        field for field in response.json()["fields"] if field["field"] == "government_warning"
+        field for field in response.json()["results"] if field["field"] == "government_warning"
     )
     assert warning_result["status"] == "FAIL"
     assert warning_result["expected"] == WARNING
-    assert warning_result["extracted"] == misread_warning
+    assert warning_result["found"] == misread_warning
 
 
 def test_verify_missing_image_returns_shaped_422_without_calling_service(client: TestClient):
