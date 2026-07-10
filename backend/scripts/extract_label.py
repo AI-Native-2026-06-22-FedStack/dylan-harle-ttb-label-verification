@@ -1,5 +1,4 @@
 import argparse
-import mimetypes
 import sys
 from pathlib import Path
 
@@ -26,10 +25,8 @@ def main() -> int:
         print(f"Could not read image: {exc}", file=sys.stderr)
         return 1
 
-    content_type = mimetypes.guess_type(args.image.name)[0]
-
     try:
-        label = OpenAIVisionService.from_env().extract(image_bytes, content_type)
+        label = OpenAIVisionService.from_env().extract(image_bytes)
     except VisionServiceError as exc:
         print(f"Extraction failed: {exc}", file=sys.stderr)
         return 2

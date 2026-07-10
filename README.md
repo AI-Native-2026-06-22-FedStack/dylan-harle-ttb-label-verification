@@ -28,10 +28,10 @@ The app is stateless and does not use a database. Uploaded images and extracted 
 
 ## Tech Stack / Vision Model
 
-- Backend: Python 3.12, FastAPI, Pillow, RapidFuzz, OpenAI API, Vercel Python runtime
+- Backend: Python 3.12, FastAPI, Pillow, pillow-heif, RapidFuzz, OpenAI API, Vercel Python runtime
 - Frontend: React, Vite, Vitest, Testing Library, Vercel static hosting
 - Vision model: `gpt-5.4-mini`
-- Model verification: `uv run python scripts\check_vision_model.py` checks `OPENAI_VISION_MODEL` against the OpenAI Models API using the configured `OPENAI_API_KEY`.
+- Model verification: `uv run python scripts/check_vision_model.py` checks `OPENAI_VISION_MODEL` against the OpenAI Models API using the configured `OPENAI_API_KEY`.
 - Last model verification attempt: 2026-07-10. The check reached OpenAI but could not complete because the configured key lacks the `api.model.read` scope required by the Models API.
 
 Main backend endpoints:
@@ -167,9 +167,9 @@ Error response shape:
 
 ## Backend Setup
 
-```powershell
+```bash
 cd backend
-copy .env.example .env
+cp .env.example .env
 ```
 
 Edit `backend/.env` and set:
@@ -183,19 +183,21 @@ Paste your OpenAI key after `OPENAI_API_KEY=` in the local `.env` file only.
 
 Install dependencies, run tests, and start the backend:
 
-```powershell
+```bash
 uv sync
 uv run pytest
 uv run uvicorn api.index:app --reload --port 8000
 ```
 
-If `uv` is installed but not available on your PowerShell `PATH`, use:
+If `uv` is installed but not available on your shell `PATH`, use:
 
-```powershell
+```bash
 python -m uv sync
 python -m uv run pytest
 python -m uv run uvicorn api.index:app --reload --port 8000
 ```
+
+On Windows Command Prompt, use `copy .env.example .env` instead of `cp .env.example .env`.
 
 Health check:
 
@@ -207,12 +209,14 @@ http://127.0.0.1:8000/health
 
 Open a second terminal:
 
-```powershell
+```bash
 cd frontend
-copy .env.example .env.local
+cp .env.example .env.local
 npm install
 npm run dev
 ```
+
+On Windows Command Prompt, use `copy .env.example .env.local` instead of `cp .env.example .env.local`.
 
 For local development, `frontend/.env.local` should contain:
 
@@ -279,9 +283,9 @@ After changing production environment variables, redeploy the affected Vercel pr
 
 Before deployment, verify the model name is available to the provider:
 
-```powershell
+```bash
 cd backend
-uv run python scripts\check_vision_model.py
+uv run python scripts/check_vision_model.py
 ```
 
 ## Performance
@@ -299,9 +303,9 @@ The full live checklist passed, including valid label, mismatch, case-only match
 
 To refresh the measurements, rerun:
 
-```powershell
+```bash
 cd backend
-uv run python scripts\phase6_live_check.py https://backend-rho-amber-37.vercel.app --speed-runs 5
+uv run python scripts/phase6_live_check.py https://backend-rho-amber-37.vercel.app --speed-runs 5
 ```
 
 Record the `single_label_speed_summary` `server_latency_ms.p50`, `server_latency_ms.p95`, `wall_latency_ms.p50`, and `wall_latency_ms.p95` values here with the run count, date, and backend URL. The first request on Vercel may include cold-start latency.
@@ -309,19 +313,19 @@ Record the `single_label_speed_summary` `server_latency_ms.p50`, `server_latency
 ## Tradeoffs
 
 - Vercel serverless hosting keeps deployment simple for the proof-of-concept, but cold starts and provider network latency can affect the first request.
-- The backend enforces a raw 2 MB upload cap per image. The frontend downsizes and recompresses selected photos before upload, so normal UI users usually stay under that cap; direct API callers using `curl` must send JPEG, PNG, or WebP files under 2 MB themselves.
+- The backend enforces a raw 2 MB upload cap per image. The frontend lets users select broad image files, then downsizes and recompresses browser-decodable photos to JPEG before upload. If a HEIC/HEIF file cannot be decoded in the browser but is already under 2 MB, the frontend sends it directly for backend decoding. Direct API callers using `curl` may send JPEG, PNG, WebP, HEIC, or HEIF files under 2 MB.
 - Batch upload is capped at 10 images to keep free-tier runtime and latency predictable.
 - The app has no database, authentication, or persistence by design.
 - NEEDS REVIEW results are intended for human review; the app surfaces field-level evidence and extracted warning text but does not make final regulatory determinations.
 
 ## Approach / Tools
 
-Development used Codex with the project PLAN, REVIEW, EXECUTE cadence: plan the phase, critique it against requirements, then implement the approved scope with tests. Codex generated and edited code and documentation, while the human operator selected priorities, approved scope, and reviewed the resulting behavior. Key tools and libraries include Python 3.12, FastAPI, uv, pytest, React, Vite, Vitest, OpenAI API, Pillow, RapidFuzz, and Vercel.
+Development used Codex with the project PLAN, REVIEW, EXECUTE cadence: plan the phase, critique it against requirements, then implement the approved scope with tests. Codex generated and edited code and documentation, while the human operator selected priorities, approved scope, and reviewed the resulting behavior. Key tools and libraries include Python 3.12, FastAPI, uv, pytest, React, Vite, Vitest, OpenAI API, Pillow, pillow-heif, RapidFuzz, and Vercel.
 
 ## Assumptions
 
 - The user manually enters the expected application data.
-- Uploaded labels are JPEG, PNG, or WebP images within the app's size limits.
+- Browser uploads are converted to JPEG when the browser can decode the selected image. Direct API uploads can be JPEG, PNG, WebP, HEIC, or HEIF images within the app's size limits.
 - The app is intended for proof-of-concept review, not production regulatory use.
 - Free-tier hosting may have occasional cold-start or network latency variance.
 
@@ -333,43 +337,43 @@ Development used Codex with the project PLAN, REVIEW, EXECUTE cadence: plan the 
 - The model output can vary between requests, especially on marginal images.
 - The configured OpenAI free-tier quota may stop repeated live tests after about 50 model requests per day. When that happens, the app may return HTTP `502` with error code `extraction_unavailable` and message `Label extraction is temporarily unavailable. Please try again.` The underlying provider error is an OpenAI `429 RateLimitError` / `rate_limit_exceeded` response such as `Rate limit reached ... on requests per day (RPD): Limit 50, Used 50, Requested 1. Please try again later.`
 - A reviewer should manually inspect any NEEDS REVIEW result.
-- Direct API uploads are not compressed by the backend before the 2 MB request cap is enforced. Use the browser UI for automatic client-side preparation, or resize/recompress files before sending them with `curl`.
+- Direct API uploads are not compressed by the backend before the 2 MB request cap is enforced. Use the browser UI for automatic client-side preparation, or resize/recompress files before sending them with `curl`. HEIC/HEIF direct uploads are decoded on the backend after upload validation and normalized to JPEG before vision extraction.
 
 ## Verification
 
 Local backend tests:
 
-```powershell
+```bash
 cd backend
 uv run pytest
 ```
 
 Frontend tests:
 
-```powershell
+```bash
 cd frontend
 npm test -- --run
 ```
 
 Frontend production build:
 
-```powershell
+```bash
 cd frontend
 npm run build
 ```
 
 Vision model configuration check:
 
-```powershell
+```bash
 cd backend
-uv run python scripts\check_vision_model.py
+uv run python scripts/check_vision_model.py
 ```
 
 Live checklist against the deployed backend:
 
-```powershell
+```bash
 cd backend
-uv run python scripts\phase6_live_check.py https://backend-rho-amber-37.vercel.app --speed-runs 5
+uv run python scripts/phase6_live_check.py https://backend-rho-amber-37.vercel.app --speed-runs 5
 ```
 
 Expected result after redeploying the current backend: the checklist passes, including valid label, mismatches, case-only match, ABV and unit normalization, government warning scenarios, imperfect image handling, wrong file type, empty submit, batch summary, and single-label latency under 5 seconds.
@@ -380,7 +384,7 @@ If repeated live checklist runs suddenly fail with `extraction_unavailable`, che
 
 Before submitting or pushing, confirm only example env files are tracked:
 
-```powershell
+```bash
 git ls-files | rg "(^|/)\.env($|\.)"
 ```
 
@@ -393,13 +397,13 @@ frontend/.env.example
 
 Confirm local env and Vercel files are ignored:
 
-```powershell
+```bash
 git check-ignore -v backend/.env frontend/.env.local backend/.vercel frontend/.vercel
 ```
 
 Scan tracked files for likely committed secrets:
 
-```powershell
+```bash
 git grep -n -I -E "sk-[A-Za-z0-9_-]{20,}" -- .
 git grep -n -I -E "OPENAI_API_KEY=[A-Za-z0-9_./+=-]+" -- .
 git grep -n -I -E "(api[_-]?key|secret|token)[[:space:]]*[:=]" -- .

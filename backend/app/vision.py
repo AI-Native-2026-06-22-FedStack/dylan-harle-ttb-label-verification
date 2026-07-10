@@ -8,6 +8,7 @@ from io import BytesIO
 from typing import Protocol
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+from pillow_heif import register_heif_opener
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.models import ExtractedLabel
@@ -24,6 +25,13 @@ DEFAULT_MAX_IMAGE_PIXELS = 20_000_000
 SUPPORTED_IMAGE_DETAILS = {"auto", "high", "low", "original"}
 
 logger = logging.getLogger(__name__)
+
+
+def register_image_decoders() -> None:
+    register_heif_opener()
+
+
+register_image_decoders()
 
 
 VISION_SYSTEM_PROMPT = (
@@ -84,7 +92,7 @@ class VisionParseError(VisionServiceError):
 
 
 class VisionService(Protocol):
-    def extract(self, image_bytes: bytes, content_type: str | None = None) -> ExtractedLabel:
+    def extract(self, image_bytes: bytes) -> ExtractedLabel:
         """Extract label fields from a single image."""
 
 
@@ -121,10 +129,10 @@ class FakeVisionService:
     ) -> None:
         self.result = result or ExtractedLabel()
         self.error = error
-        self.calls: list[tuple[bytes, str | None]] = []
+        self.calls: list[bytes] = []
 
-    def extract(self, image_bytes: bytes, content_type: str | None = None) -> ExtractedLabel:
-        self.calls.append((image_bytes, content_type))
+    def extract(self, image_bytes: bytes) -> ExtractedLabel:
+        self.calls.append(image_bytes)
 
         if self.error is not None:
             raise self.error
@@ -278,7 +286,7 @@ class OpenAIVisionService:
             ),
         )
 
-    def extract(self, image_bytes: bytes, content_type: str | None = None) -> ExtractedLabel:
+    def extract(self, image_bytes: bytes) -> ExtractedLabel:
         extraction_start = time.perf_counter()
         preprocess_start = time.perf_counter()
         processed = preprocess_label_image(

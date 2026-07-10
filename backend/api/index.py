@@ -39,6 +39,8 @@ BATCH_CONCURRENCY_DEFAULT = 3
 UPLOAD_CHUNK_BYTES = 64 * 1024
 LATENCY_BUDGET_MS = 5000
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+SUPPORTED_HEIF_EXTENSIONS = {".heic", ".heif"}
+GENERIC_UPLOAD_TYPES = {"", "application/octet-stream"}
 APPLICATION_FIELDS = (
     "brand_name",
     "class_type",
@@ -159,7 +161,7 @@ async def verify(
 
         application = ApplicationData(**form_values)
         phase_start = time.perf_counter()
-        extracted = await asyncio.to_thread(vision_service.extract, image_bytes, image.content_type)
+        extracted = await asyncio.to_thread(vision_service.extract, image_bytes)
         timings["extraction_ms"] = _elapsed_ms(phase_start)
         phase_start = time.perf_counter()
         result = verify_label(application, extracted)
@@ -188,7 +190,7 @@ async def verify(
         return _error_response(
             400,
             "invalid_image",
-            "We could not read that image. Please upload a clear JPEG, PNG, or WebP label photo.",
+            "We could not read that image. Please upload a clear JPEG, PNG, WebP, HEIC, or HEIF label photo.",
             start_time,
         )
     except VisionConfigurationError:
@@ -446,11 +448,11 @@ async def _validate_and_read_image(
             start_time,
         )
 
-    if image.content_type not in SUPPORTED_IMAGE_TYPES:
+    if not _is_supported_image_upload(image):
         raise _http_error(
             415,
             "unsupported_image_type",
-            "Please upload a JPEG, PNG, or WebP image.",
+            "Please upload a JPEG, PNG, WebP, HEIC, or HEIF image.",
             start_time,
         )
 
@@ -537,7 +539,6 @@ async def _verify_batch_item(
             extracted = await asyncio.to_thread(
                 vision_service.extract,
                 image_bytes,
-                content_type,
             )
             extraction_ms = _elapsed_ms(phase_start)
             phase_start = time.perf_counter()
@@ -569,7 +570,7 @@ async def _verify_batch_item(
                 index,
                 filename,
                 "invalid_image",
-                "We could not read this image. Please use a clear JPEG, PNG, or WebP label photo.",
+                "We could not read this image. Please use a clear JPEG, PNG, WebP, HEIC, or HEIF label photo.",
                 item_start,
             )
         except VisionConfigurationError:
@@ -643,6 +644,19 @@ def _batch_concurrency() -> int:
         return BATCH_CONCURRENCY_DEFAULT
 
     return max(1, min(value, MAX_BATCH_IMAGES))
+
+
+def _is_supported_image_upload(image: UploadFile) -> bool:
+    content_type = (image.content_type or "").casefold()
+
+    if content_type in SUPPORTED_IMAGE_TYPES or content_type in {"image/heic", "image/heif"}:
+        return True
+
+    if content_type in GENERIC_UPLOAD_TYPES:
+        filename = (image.filename or "").casefold()
+        return any(filename.endswith(extension) for extension in SUPPORTED_HEIF_EXTENSIONS)
+
+    return False
 
 
 def _elapsed_ms(start_time: float) -> int:

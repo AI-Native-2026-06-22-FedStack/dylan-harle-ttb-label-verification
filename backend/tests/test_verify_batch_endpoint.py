@@ -33,15 +33,15 @@ class MappingVisionService:
     def __init__(self, responses: dict[bytes, ExtractedLabel | Exception], delay: float = 0) -> None:
         self.responses = responses
         self.delay = delay
-        self.calls: list[tuple[bytes, str | None]] = []
+        self.calls: list[bytes] = []
         self._lock = threading.Lock()
 
-    def extract(self, image_bytes: bytes, content_type: str | None = None) -> ExtractedLabel:
+    def extract(self, image_bytes: bytes) -> ExtractedLabel:
         if self.delay:
             time.sleep(self.delay)
 
         with self._lock:
-            self.calls.append((image_bytes, content_type))
+            self.calls.append(image_bytes)
 
         response = self.responses[image_bytes]
 
@@ -89,6 +89,10 @@ def image_files(*contents: bytes):
         ("images", (f"label-{index + 1}.jpg", content, "image/jpeg"))
         for index, content in enumerate(contents)
     ]
+
+
+def image_upload(filename: str, content: bytes, content_type: str):
+    return [("images", (filename, content, content_type))]
 
 
 def override_vision_service(service: MappingVisionService) -> None:
@@ -189,6 +193,33 @@ def test_verify_batch_rejects_unsupported_content_type(client: TestClient):
     assert response.status_code == 415
     error = error_payload(response)
     assert error["code"] == "unsupported_image_type"
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [
+        ("label.heic", "image/heic"),
+        ("label.heif", "image/heif"),
+        ("label.heic", "application/octet-stream"),
+        ("label.heif", "application/octet-stream"),
+    ],
+)
+def test_verify_batch_accepts_heic_and_heif_uploads(
+    client: TestClient,
+    filename: str,
+    content_type: str,
+):
+    service = MappingVisionService({b"heif bytes": extracted_label()})
+    override_vision_service(service)
+
+    response = client.post(
+        "/verify/batch",
+        data=batch_data(valid_form()),
+        files=image_upload(filename, b"heif bytes", content_type),
+    )
+
+    assert response.status_code == 200
+    assert service.calls == [b"heif bytes"]
 
 
 def test_verify_batch_rejects_oversized_image(client: TestClient):

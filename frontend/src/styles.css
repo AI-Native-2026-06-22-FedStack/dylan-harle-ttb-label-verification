@@ -350,6 +350,13 @@ h3 {
   color: #143763;
 }
 
+.cold-start-hint {
+  display: block;
+  margin-top: 8px;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
 .progress-band {
   display: grid;
   gap: 12px;

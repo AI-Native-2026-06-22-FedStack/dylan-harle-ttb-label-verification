@@ -16,6 +16,7 @@ from app.vision import (
     VisionProviderError,
     VisionTimeoutError,
     preprocess_label_image,
+    register_image_decoders,
 )
 
 
@@ -74,17 +75,17 @@ def test_fake_vision_service_returns_configured_label_and_records_call():
     expected = ExtractedLabel(brand_name="Acme Cellars")
     service = FakeVisionService(result=expected)
 
-    result = service.extract(b"image bytes", "image/jpeg")
+    result = service.extract(b"image bytes")
 
     assert result == expected
-    assert service.calls == [(b"image bytes", "image/jpeg")]
+    assert service.calls == [b"image bytes"]
 
 
 def test_openai_service_uses_structured_parse_and_maps_populated_label():
     fake_client = FakeOpenAIClient(parsed=populated_payload())
     service = OpenAIVisionService(client=fake_client, model="test-vision-model")
 
-    result = service.extract(image_bytes(), "image/png")
+    result = service.extract(image_bytes())
 
     assert result == ExtractedLabel(**populated_payload())
 
@@ -191,6 +192,16 @@ def test_preprocess_rejects_images_above_pixel_cap():
             image_bytes(size=(101, 100)),
             max_pixels=10_000,
         )
+
+
+def test_register_image_decoders_registers_heif_opener(monkeypatch: pytest.MonkeyPatch):
+    calls = []
+
+    monkeypatch.setattr("app.vision.register_heif_opener", lambda: calls.append("registered"))
+
+    register_image_decoders()
+
+    assert calls == ["registered"]
 
 
 def test_openai_service_reads_tuning_from_environment(

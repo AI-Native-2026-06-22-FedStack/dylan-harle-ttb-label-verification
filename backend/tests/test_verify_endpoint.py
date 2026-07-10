@@ -66,8 +66,9 @@ def extracted_label(**overrides: str | None) -> ExtractedLabel:
 def image_file(
     content: bytes = b"fake image bytes",
     content_type: str = "image/jpeg",
+    filename: str = "label.jpg",
 ) -> dict[str, tuple[str, bytes, str]]:
-    return {"image": ("label.jpg", content, content_type)}
+    return {"image": (filename, content, content_type)}
 
 
 def override_vision_service(fake_service: FakeVisionService) -> None:
@@ -95,7 +96,7 @@ def test_verify_success_returns_full_verification_result(client: TestClient):
     assert payload["overall_verdict"] == "APPROVED"
     assert isinstance(payload["latency_ms"], int)
     assert len(payload["results"]) == 7
-    assert fake_service.calls == [(b"fake image bytes", "image/jpeg")]
+    assert fake_service.calls == [b"fake image bytes"]
 
     brand_result = next(field for field in payload["results"] if field["field"] == "brand_name")
     assert brand_result["expected"] == "Acme Cellars"
@@ -285,6 +286,33 @@ def test_verify_unsupported_content_type_returns_shaped_415_without_calling_serv
     assert fake_service.calls == []
 
 
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [
+        ("label.heic", "image/heic"),
+        ("label.heif", "image/heif"),
+        ("label.heic", "application/octet-stream"),
+        ("label.heif", "application/octet-stream"),
+    ],
+)
+def test_verify_accepts_heic_and_heif_uploads(
+    client: TestClient,
+    filename: str,
+    content_type: str,
+):
+    fake_service = FakeVisionService(result=extracted_label())
+    override_vision_service(fake_service)
+
+    response = client.post(
+        "/verify",
+        data=valid_form(),
+        files=image_file(content=b"heif bytes", content_type=content_type, filename=filename),
+    )
+
+    assert response.status_code == 200
+    assert fake_service.calls == [b"heif bytes"]
+
+
 def test_verify_oversized_image_returns_shaped_413_without_calling_service(
     client: TestClient,
 ):
@@ -328,4 +356,4 @@ def test_verify_vision_errors_return_shaped_responses(
     assert response.status_code == status_code
     error = error_payload(response)
     assert error["code"] == code
-    assert fake_service.calls == [(b"fake image bytes", "image/jpeg")]
+    assert fake_service.calls == [b"fake image bytes"]
