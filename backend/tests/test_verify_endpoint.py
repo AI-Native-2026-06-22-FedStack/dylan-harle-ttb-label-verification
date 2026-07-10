@@ -102,6 +102,33 @@ def test_verify_success_returns_full_verification_result(client: TestClient):
     assert brand_result["found"] == "ACME CELLARS"
 
 
+def test_get_vision_service_returns_cached_env_service_directly(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake_service = FakeVisionService(result=extracted_label())
+    monkeypatch.setattr(api_index, "get_openai_vision_service_from_env", lambda: fake_service)
+
+    assert get_vision_service() is fake_service
+
+
+def test_startup_configuration_log_includes_public_config_without_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://frontend-gamma-silk-13.vercel.app")
+    monkeypatch.setenv("OPENAI_VISION_MODEL", "gpt-5.4-mini")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret-value")
+    caplog.set_level(logging.INFO, logger="api.index")
+
+    api_index.log_startup_configuration()
+
+    assert "app_env=production" in caplog.text
+    assert "allowed_origins=https://frontend-gamma-silk-13.vercel.app" in caplog.text
+    assert "vision_model=gpt-5.4-mini" in caplog.text
+    assert "sk-test-secret-value" not in caplog.text
+
+
 def test_verify_logs_warning_when_latency_exceeds_budget(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

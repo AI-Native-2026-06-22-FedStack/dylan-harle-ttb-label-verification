@@ -10,6 +10,7 @@ from app.vision import (
     DEFAULT_IMAGE_DETAIL,
     FakeVisionService,
     OpenAIVisionService,
+    VisionConfigurationError,
     VisionInputError,
     VisionParseError,
     VisionProviderError,
@@ -222,3 +223,19 @@ def test_openai_service_reads_tuning_from_environment(
     assert service.min_jpeg_quality == 70
     assert service.max_processed_bytes == 1_048_576
     assert service.max_image_pixels == 9_000_000
+
+
+@pytest.mark.parametrize("model", [None, "", "   "])
+def test_openai_service_requires_explicit_model(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str | None,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    if model is None:
+        monkeypatch.delenv("OPENAI_VISION_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("OPENAI_VISION_MODEL", model)
+
+    with pytest.raises(VisionConfigurationError, match="OPENAI_VISION_MODEL"):
+        OpenAIVisionService.from_env()

@@ -26,6 +26,14 @@ The frontend collects the expected application data and one or more label images
 
 The app is stateless and does not use a database. Uploaded images and extracted values are processed only for the request/response cycle.
 
+## Tech Stack / Vision Model
+
+- Backend: Python 3.12, FastAPI, Pillow, RapidFuzz, OpenAI API, Vercel Python runtime
+- Frontend: React, Vite, Vitest, Testing Library, Vercel static hosting
+- Vision model: `gpt-5.4-mini`
+- Model verification: `uv run python scripts\check_vision_model.py` checks `OPENAI_VISION_MODEL` against the OpenAI Models API using the configured `OPENAI_API_KEY`.
+- Last model verification attempt: 2026-07-10. The check reached OpenAI but could not complete because the configured key lacks the `api.model.read` scope required by the Models API.
+
 Main backend endpoints:
 
 - `GET /health`
@@ -227,7 +235,7 @@ Backend:
 | `APP_ENV` | No | `local` | Names the runtime environment returned by `/health`. |
 | `ALLOWED_ORIGINS` | Yes in production | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS allowlist. Production should be restricted to the deployed frontend URL. |
 | `OPENAI_API_KEY` | Yes | None | OpenAI API key used by the vision extractor. Never commit this value. |
-| `OPENAI_VISION_MODEL` | No | `gpt-5.4-mini` | Vision-capable model used for extraction. |
+| `OPENAI_VISION_MODEL` | Yes | None | Vision-capable model used for extraction. Production currently uses `gpt-5.4-mini`. |
 | `OPENAI_IMAGE_DETAIL` | No | `high` | Image detail sent to the provider. |
 | `OPENAI_VISION_TIMEOUT_SECONDS` | No | `3.8` | Provider timeout used to protect the 5-second target. |
 | `OPENAI_MAX_IMAGE_LONG_EDGE` | No | `1280` | Maximum image long edge after backend preprocessing. |
@@ -247,23 +255,34 @@ Real secrets must stay in local `.env` files or hosting-provider environment var
 
 ## Deployment
 
-The backend and frontend are deployed as separate Vercel projects from this repository.
+The backend and frontend are deployed as separate Vercel projects from this repository. The deploy contract is versioned in `backend/vercel.json` and `frontend/vercel.json`.
 
 Backend project:
 
 - Root directory: `backend`
-- Framework preset: Other
-- Production environment variables include `OPENAI_API_KEY`, `APP_ENV=production`, `ALLOWED_ORIGINS`, and the OpenAI/image tuning variables from `backend/.env.example`
+- Framework preset: FastAPI
+- Runtime config: `backend/vercel.json`
+- Production environment variables include `OPENAI_API_KEY`, `APP_ENV=production`, `ALLOWED_ORIGINS=https://frontend-gamma-silk-13.vercel.app`, `OPENAI_VISION_MODEL=gpt-5.4-mini`, and the OpenAI/image tuning variables from `backend/.env.example`
+- `OPENAI_API_KEY` is configured only in Vercel Project Settings or local `.env`; it is not stored in `vercel.json`
+- Startup logs include `APP_ENV`, resolved `ALLOWED_ORIGINS`, and resolved `OPENAI_VISION_MODEL` so reviewers can audit config without exposing secrets
 
 Frontend project:
 
 - Root directory: `frontend`
 - Framework preset: Vite
+- Runtime config: `frontend/vercel.json`
 - Build command: `npm run build`
 - Output directory: `dist`
 - Production environment variable: `VITE_API_BASE_URL=https://backend-rho-amber-37.vercel.app`
 
 After changing production environment variables, redeploy the affected Vercel project.
+
+Before deployment, verify the model name is available to the provider:
+
+```powershell
+cd backend
+uv run python scripts\check_vision_model.py
+```
 
 ## Performance
 
@@ -290,7 +309,7 @@ Record the `single_label_speed_summary` `server_latency_ms.p50`, `server_latency
 ## Tradeoffs
 
 - Vercel serverless hosting keeps deployment simple for the proof-of-concept, but cold starts and provider network latency can affect the first request.
-- The backend enforces a 2 MB upload cap. The frontend downsizes and recompresses images before upload so normal UI users usually stay under that cap; direct API callers must send smaller files.
+- The backend enforces a raw 2 MB upload cap per image. The frontend downsizes and recompresses selected photos before upload, so normal UI users usually stay under that cap; direct API callers using `curl` must send JPEG, PNG, or WebP files under 2 MB themselves.
 - Batch upload is capped at 10 images to keep free-tier runtime and latency predictable.
 - The app has no database, authentication, or persistence by design.
 - NEEDS REVIEW results are intended for human review; the app surfaces field-level evidence and extracted warning text but does not make final regulatory determinations.
@@ -314,6 +333,7 @@ Development used Codex with the project PLAN, REVIEW, EXECUTE cadence: plan the 
 - The model output can vary between requests, especially on marginal images.
 - The configured OpenAI free-tier quota may stop repeated live tests after about 50 model requests per day. When that happens, the app may return HTTP `502` with error code `extraction_unavailable` and message `Label extraction is temporarily unavailable. Please try again.` The underlying provider error is an OpenAI `429 RateLimitError` / `rate_limit_exceeded` response such as `Rate limit reached ... on requests per day (RPD): Limit 50, Used 50, Requested 1. Please try again later.`
 - A reviewer should manually inspect any NEEDS REVIEW result.
+- Direct API uploads are not compressed by the backend before the 2 MB request cap is enforced. Use the browser UI for automatic client-side preparation, or resize/recompress files before sending them with `curl`.
 
 ## Verification
 
@@ -336,6 +356,13 @@ Frontend production build:
 ```powershell
 cd frontend
 npm run build
+```
+
+Vision model configuration check:
+
+```powershell
+cd backend
+uv run python scripts\check_vision_model.py
 ```
 
 Live checklist against the deployed backend:

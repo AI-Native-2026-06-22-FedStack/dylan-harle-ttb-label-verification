@@ -223,9 +223,13 @@ class OpenAIVisionService:
     @classmethod
     def from_env(cls) -> "OpenAIVisionService":
         api_key = os.getenv("OPENAI_API_KEY")
+        model = os.getenv("OPENAI_VISION_MODEL")
 
         if not api_key:
             raise VisionConfigurationError("OPENAI_API_KEY is not set.")
+
+        if model is None or model.strip() == "":
+            raise VisionConfigurationError("OPENAI_VISION_MODEL is not set.")
 
         try:
             from openai import OpenAI
@@ -234,7 +238,7 @@ class OpenAIVisionService:
 
         return cls(
             client=OpenAI(api_key=api_key),
-            model=os.getenv("OPENAI_VISION_MODEL", DEFAULT_VISION_MODEL),
+            model=model.strip(),
             image_detail=_env_image_detail("OPENAI_IMAGE_DETAIL", DEFAULT_IMAGE_DETAIL),
             timeout_seconds=_env_float(
                 "OPENAI_VISION_TIMEOUT_SECONDS",

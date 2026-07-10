@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
@@ -77,7 +79,27 @@ def allowed_origins() -> list[str]:
     return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 
-app = FastAPI(title="TTB Label Verification API")
+def configured_vision_model() -> str:
+    return os.getenv("OPENAI_VISION_MODEL", "").strip()
+
+
+def log_startup_configuration() -> None:
+    model = configured_vision_model() or "<missing>"
+    logger.info(
+        "startup configuration app_env=%s allowed_origins=%s vision_model=%s",
+        os.getenv("APP_ENV", "local"),
+        ",".join(allowed_origins()),
+        model,
+    )
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    log_startup_configuration()
+    yield
+
+
+app = FastAPI(title="TTB Label Verification API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -97,13 +119,8 @@ def health() -> dict[str, Any]:
     }
 
 
-class EnvironmentVisionService:
-    def extract(self, image_bytes: bytes, content_type: str | None = None):
-        return get_openai_vision_service_from_env().extract(image_bytes, content_type)
-
-
 def get_vision_service() -> VisionService:
-    return EnvironmentVisionService()
+    return get_openai_vision_service_from_env()
 
 
 @app.post("/verify", response_model=VerificationResult)
