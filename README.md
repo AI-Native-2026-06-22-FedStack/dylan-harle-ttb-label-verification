@@ -1,6 +1,6 @@
 # TTB Label Verification App
 
-A proof-of-concept web app that compares submitted alcohol beverage application data against uploaded label images. The app extracts visible label text with a vision model, compares each field, and returns a clear PASS or NEEDS REVIEW result for a single label or a batch of labels.
+A proof-of-concept web app that compares submitted alcohol beverage application data against uploaded label images. The app extracts visible label text with a vision model, compares each field, and returns a clear APPROVED or NEEDS REVIEW result for a single label or a batch of labels.
 
 This is a prototype helper for review workflows. It is not an official TTB compliance determination.
 
@@ -8,6 +8,7 @@ This is a prototype helper for review workflows. It is not an official TTB compl
 
 - Frontend: https://frontend-gamma-silk-13.vercel.app
 - Backend health: https://backend-rho-amber-37.vercel.app/health
+- Last verified: 2026-07-10. Both URLs returned HTTP 200.
 
 ## Features
 
@@ -30,6 +31,123 @@ Main backend endpoints:
 - `GET /health`
 - `POST /verify`
 - `POST /verify/batch`
+
+## API Examples
+
+The examples below use the current API contract implemented in this repository.
+
+Single-label verification:
+
+```bash
+curl -X POST "https://backend-rho-amber-37.vercel.app/verify" \
+  -F "image=@sample.jpg" \
+  -F "brand_name=Acme Cellars" \
+  -F "class_type=Red Wine" \
+  -F "producer=Acme Winery LLC" \
+  -F "country_of_origin=United States" \
+  -F "abv=13.5%" \
+  -F "net_contents=750 mL" \
+  -F "government_warning=GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD NOT DRINK ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF BIRTH DEFECTS. (2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR ABILITY TO DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS."
+```
+
+Batch verification with one application record per image:
+
+```bash
+curl -X POST "https://backend-rho-amber-37.vercel.app/verify/batch" \
+  -F "images=@label-1.jpg" \
+  -F "images=@label-2.jpg" \
+  -F 'applications=[
+    {
+      "brand_name": "Acme Cellars",
+      "class_type": "Red Wine",
+      "producer": "Acme Winery LLC",
+      "country_of_origin": "United States",
+      "abv": "13.5%",
+      "net_contents": "750 mL",
+      "government_warning": "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD NOT DRINK ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF BIRTH DEFECTS. (2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR ABILITY TO DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS."
+    },
+    {
+      "brand_name": "Acme Cellars Reserve",
+      "class_type": "Red Wine",
+      "producer": "Acme Winery LLC",
+      "country_of_origin": "United States",
+      "abv": "14.0%",
+      "net_contents": "750 mL",
+      "government_warning": "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD NOT DRINK ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF BIRTH DEFECTS. (2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR ABILITY TO DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS."
+    }
+  ]'
+```
+
+Successful single-label response shape:
+
+```json
+{
+  "overall_verdict": "APPROVED",
+  "results": [
+    {
+      "field": "brand_name",
+      "status": "PASS",
+      "expected": "Acme Cellars",
+      "found": "ACME CELLARS",
+      "match_type": "fuzzy_token_set_ratio",
+      "score": 100.0,
+      "message": "Fuzzy score 100.00; threshold 90.00."
+    }
+  ],
+  "latency_ms": 1200
+}
+```
+
+Successful batch response shape:
+
+```json
+{
+  "summary": {
+    "total": 2,
+    "passed": 1,
+    "needs_review": 1
+  },
+  "items": [
+    {
+      "index": 0,
+      "filename": "label-1.jpg",
+      "status": "APPROVED",
+      "result": {
+        "overall_verdict": "APPROVED",
+        "results": [],
+        "latency_ms": 1200
+      },
+      "error": null,
+      "latency_ms": 1200
+    }
+  ],
+  "latency_ms": 1500
+}
+```
+
+Error response shape:
+
+```json
+{
+  "error": {
+    "code": "missing_required_field",
+    "message": "Please upload a label image.",
+    "latency_ms": 0
+  }
+}
+```
+
+## Comparison Rules
+
+| Field | Strategy | Passing rule |
+| --- | --- | --- |
+| `brand_name` | Fuzzy token-set match | Score must be at least `90`. |
+| `class_type` | Fuzzy token-set match | Score must be at least `88`. |
+| `producer` | Fuzzy token-set match | Score must be at least `90`. |
+| `country_of_origin` | Canonical country synonym and prefix normalization | Values must resolve to the same canonical country; examples include `USA` and `United States`. |
+| `abv` | Numeric normalization | Difference must be `0.1` or less; supports `%`, `Alc./Vol.`, and proof such as `90 Proof` equals `45%`. |
+| `net_contents` | Unit normalization to mL | Difference must be `1 mL` or less; supports `mL`, `L`, `cL`, `fl oz`, `fluid ounce(s)`, and `oz`. |
+| `government_warning` | Exact case-sensitive wording and punctuation after whitespace folding | Text must match the required warning exactly except for visual line wrapping or repeated whitespace. FAIL results include the extracted warning in `found` for reviewer override. |
 
 ## Local Requirements
 
@@ -84,8 +202,8 @@ Open a second terminal:
 ```powershell
 cd frontend
 copy .env.example .env.local
-npm.cmd install
-npm.cmd run dev
+npm install
+npm run dev
 ```
 
 For local development, `frontend/.env.local` should contain:
@@ -104,21 +222,26 @@ http://localhost:5173
 
 Backend:
 
-- `APP_ENV`
-- `ALLOWED_ORIGINS`
-- `OPENAI_API_KEY`
-- `OPENAI_VISION_MODEL`
-- `OPENAI_IMAGE_DETAIL`
-- `OPENAI_VISION_TIMEOUT_SECONDS`
-- `OPENAI_MAX_IMAGE_LONG_EDGE`
-- `OPENAI_JPEG_QUALITY`
-- `OPENAI_MIN_JPEG_QUALITY`
-- `OPENAI_MAX_PROCESSED_BYTES`
-- `OPENAI_MAX_IMAGE_PIXELS`
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `APP_ENV` | No | `local` | Names the runtime environment returned by `/health`. |
+| `ALLOWED_ORIGINS` | Yes in production | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS allowlist. Production should be restricted to the deployed frontend URL. |
+| `OPENAI_API_KEY` | Yes | None | OpenAI API key used by the vision extractor. Never commit this value. |
+| `OPENAI_VISION_MODEL` | No | `gpt-5.4-mini` | Vision-capable model used for extraction. |
+| `OPENAI_IMAGE_DETAIL` | No | `high` | Image detail sent to the provider. |
+| `OPENAI_VISION_TIMEOUT_SECONDS` | No | `3.8` | Provider timeout used to protect the 5-second target. |
+| `OPENAI_MAX_IMAGE_LONG_EDGE` | No | `1280` | Maximum image long edge after backend preprocessing. |
+| `OPENAI_JPEG_QUALITY` | No | `85` | First JPEG quality attempted during preprocessing. |
+| `OPENAI_MIN_JPEG_QUALITY` | No | `82` | Lower JPEG quality fallback during preprocessing. |
+| `OPENAI_MAX_PROCESSED_BYTES` | No | `2097152` | Maximum processed image size sent to the provider. |
+| `OPENAI_MAX_IMAGE_PIXELS` | No | `20000000` | Maximum decoded image pixel count accepted by backend preprocessing. |
+| `BATCH_CONCURRENCY` | No | `3` | Maximum concurrent batch item verifications, clamped between `1` and `10`. |
 
 Frontend:
 
-- `VITE_API_BASE_URL`
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `VITE_API_BASE_URL` | Yes | `http://localhost:8000` in `.env.example` | Backend base URL used by the browser app. |
 
 Real secrets must stay in local `.env` files or hosting-provider environment variables only. Do not commit API keys.
 
@@ -142,18 +265,39 @@ Frontend project:
 
 After changing production environment variables, redeploy the affected Vercel project.
 
-## Tools Used
+## Performance
 
-- Python 3.12
-- FastAPI
-- uv
-- pytest
-- React
-- Vite
-- OpenAI API
-- Pillow
-- RapidFuzz
-- Vercel
+Target: a single-label verification should return in under 5 seconds.
+
+Measured live performance on 2026-07-10 against `https://backend-rho-amber-37.vercel.app` with `--speed-runs 5`:
+
+| Metric | p50 | p95 |
+| --- | ---: | ---: |
+| Server latency | 2120 ms | 2252 ms |
+| Wall latency | 2323 ms | 2459 ms |
+
+The full live checklist passed, including valid label, mismatch, case-only match, warning failures, batch summary, and single-label latency under 5 seconds. The first valid-label request in the run took `4431 ms` server time and `4974 ms` wall time, likely including Vercel cold-start overhead.
+
+To refresh the measurements, rerun:
+
+```powershell
+cd backend
+uv run python scripts\phase6_live_check.py https://backend-rho-amber-37.vercel.app --speed-runs 5
+```
+
+Record the `single_label_speed_summary` `server_latency_ms.p50`, `server_latency_ms.p95`, `wall_latency_ms.p50`, and `wall_latency_ms.p95` values here with the run count, date, and backend URL. The first request on Vercel may include cold-start latency.
+
+## Tradeoffs
+
+- Vercel serverless hosting keeps deployment simple for the proof-of-concept, but cold starts and provider network latency can affect the first request.
+- The backend enforces a 2 MB upload cap. The frontend downsizes and recompresses images before upload so normal UI users usually stay under that cap; direct API callers must send smaller files.
+- Batch upload is capped at 10 images to keep free-tier runtime and latency predictable.
+- The app has no database, authentication, or persistence by design.
+- NEEDS REVIEW results are intended for human review; the app surfaces field-level evidence and extracted warning text but does not make final regulatory determinations.
+
+## Approach / Tools
+
+Development used Codex with the project PLAN, REVIEW, EXECUTE cadence: plan the phase, critique it against requirements, then implement the approved scope with tests. Codex generated and edited code and documentation, while the human operator selected priorities, approved scope, and reviewed the resulting behavior. Key tools and libraries include Python 3.12, FastAPI, uv, pytest, React, Vite, Vitest, OpenAI API, Pillow, RapidFuzz, and Vercel.
 
 ## Assumptions
 
@@ -180,11 +324,18 @@ cd backend
 uv run pytest
 ```
 
+Frontend tests:
+
+```powershell
+cd frontend
+npm test -- --run
+```
+
 Frontend production build:
 
 ```powershell
 cd frontend
-npm.cmd run build
+npm run build
 ```
 
 Live checklist against the deployed backend:
@@ -194,7 +345,7 @@ cd backend
 uv run python scripts\phase6_live_check.py https://backend-rho-amber-37.vercel.app --speed-runs 5
 ```
 
-Expected result: the checklist passes, including valid label, mismatches, case-only match, ABV and unit normalization, government warning scenarios, imperfect image handling, wrong file type, empty submit, batch summary, and single-label latency under 5 seconds.
+Expected result after redeploying the current backend: the checklist passes, including valid label, mismatches, case-only match, ABV and unit normalization, government warning scenarios, imperfect image handling, wrong file type, empty submit, batch summary, and single-label latency under 5 seconds.
 
 If repeated live checklist runs suddenly fail with `extraction_unavailable`, check whether the OpenAI request-per-day limit has been reached before treating it as an application failure.
 
